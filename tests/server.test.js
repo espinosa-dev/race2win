@@ -111,7 +111,7 @@ test("serves the game, Three.js locally, and health status", async () => {
     fetch(`${baseUrl}/healthz`),
   ]);
   assert.equal(page.status, 200);
-  assert.match(await page.text(), /Circuito Cobalto/);
+  assert.match(await page.text(), /Race2Win/);
   assert.equal(three.status, 200);
   assert.match(await three.text(), /THREE/);
   assert.deepEqual(await health.json(), { ok: true });

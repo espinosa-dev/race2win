@@ -344,7 +344,7 @@ function createGameServer() {
 if (require.main === module) {
   const game = createGameServer();
   game.httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`Circuito Cobalto disponible en http://localhost:${game.httpServer.address().port}`);
+    console.log(`Race2Win disponible en http://localhost:${game.httpServer.address().port}`);
     for (const address of getLanAddresses()) {
       console.log(`Red local: http://${address}:${game.httpServer.address().port}`);
     }

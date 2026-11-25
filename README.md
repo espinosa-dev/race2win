@@ -1,4 +1,4 @@
-# Race2Win — Circuito Cobalto
+# Race2Win
 
 MVP de un juego arcade de carreras 3D para navegador. Compite contra bots o juega con otras personas en una red local.
 
