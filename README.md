@@ -47,4 +47,3 @@ npm test
 - `server.js`: servidor, simulación de carrera y comunicación en tiempo real.
 - `public/`: interfaz y escena 3D del juego.
 - `tests/`: pruebas del servidor.
-
