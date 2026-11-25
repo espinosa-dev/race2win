@@ -1,0 +1,23 @@
+{
+  "name": "circuito-cobalto",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MVP de carreras arcade 3D para navegador, con bots y multijugador en red local.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1",
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.1"
+  }
+}

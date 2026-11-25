@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#142a30">
+    <title>Circuito Cobalto — carreras arcade</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Circuito Cobalto, inicio">
+          <span class="brand-mark" aria-hidden="true">C</span>
+          <span>CIRCUITO <b>COBALTO</b></span>
+        </a>
+        <div class="top-status"><span class="status-dot"></span><span id="connection-label">SERVIDOR LOCAL</span></div>
+      </header>
+
+      <section id="join-screen" class="join-screen">
+        <div class="hero-copy">
+          <p class="eyebrow">MVP · TEMPORADA 01</p>
+          <h1>Tu primera<br><span>vuelta empieza aquí.</span></h1>
+          <p class="intro">Pisa el acelerador, adelanta a los bots y reta a tus amigos en la misma red.</p>
+          <div class="track-note"><span class="track-icon">↗</span><span><b>UN CIRCUITO</b><small>3 vueltas · carrera arcade</small></span></div>
+        </div>
+        <form id="join-form" class="join-card">
+          <div class="card-topline"><span>PREPARAR CARRERA</span><span class="card-number">01 / 01</span></div>
+          <label for="driver-name">Nombre del piloto</label>
+          <input id="driver-name" name="name" maxlength="16" placeholder="Tu apodo" autocomplete="nickname" value="Piloto" required>
+          <label for="bot-count">Rivales controlados por IA</label>
+          <select id="bot-count" name="botCount">
+            <option value="3" selected>3 bots</option>
+            <option value="1">1 bot</option>
+            <option value="2">2 bots</option>
+            <option value="4">4 bots</option>
+            <option value="5">5 bots</option>
+            <option value="6">6 bots</option>
+            <option value="7">7 bots</option>
+          </select>
+          <button class="primary-button" type="submit">ENTRAR EN PISTA <span aria-hidden="true">→</span></button>
+          <p class="form-error" id="join-error" role="alert"></p>
+          <div class="lan-note"><span aria-hidden="true">⌁</span><span>¿Juegas en LAN? Comparte la dirección que aparece en la consola del servidor.</span></div>
+        </form>
+        <div class="hero-decoration" aria-hidden="true">
+          <div class="sun-disc"></div>
+          <div class="decor-track"></div>
+          <div class="hero-kart"><span></span></div>
+        </div>
+      </section>
+
+      <section id="race-screen" class="race-screen is-hidden" aria-label="Carrera">
+        <div id="game-view" class="game-view"></div>
+        <div class="hud hud-top-left">
+          <div class="hud-label">VUELTA</div>
+          <div class="lap-value"><span id="lap-number">1</span><small> / 3</small></div>
+        </div>
+        <div class="hud hud-clock">
+          <div class="hud-label">TIEMPO</div>
+          <div class="clock-value" id="race-clock">0:00.00</div>
+        </div>
+        <div class="hud hud-top-right">
+          <div class="hud-label">POSICIÓN</div>
+          <div class="place-value"><span id="place-number">—</span><small id="place-suffix">º</small></div>
+        </div>
+        <div class="race-message" id="race-message" aria-live="polite"></div>
+        <aside class="leaderboard">
+          <div class="leaderboard-heading"><span>CLASIFICACIÓN</span><span id="race-state-label">SALA</span></div>
+          <ol id="standings-list"></ol>
+        </aside>
+        <div class="speedometer"><span id="speed-value">0</span><small>KM/H</small></div>
+        <div class="controls-hint">W / ↑ ACELERAR <i>·</i> S / ↓ FRENAR <i>·</i> A D / ← → GIRAR</div>
+        <div class="race-actions">
+          <button id="start-button" class="primary-button is-hidden" type="button">EMPEZAR CARRERA <span aria-hidden="true">→</span></button>
+          <button id="restart-button" class="primary-button is-hidden" type="button">OTRA CARRERA <span aria-hidden="true">↻</span></button>
+          <button id="leave-button" class="quiet-button" type="button">SALIR</button>
+        </div>
+      </section>
+
+      <footer class="footer"><span>HECHO PARA CORRER · MVP 0.1</span><span>ARTE ORIGINAL · JUEGA LOCAL O EN LAN</span></footer>
+    </main>
+    <script src="/socket.io/socket.io.js"></script>
+    <script type="module" src="/game.js"></script>
+  </body>
+</html>
