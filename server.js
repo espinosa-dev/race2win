@@ -11,6 +11,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const TOTAL_LAPS = 3;
 const ALLOWED_LAPS = [1, 3, 5, 7];
 const MAX_PLAYERS = 8;
+const ALLOWED_WEATHER = ["sunny", "sunset", "night", "rain"];
 const STEERING_RADIUS = 7;
 const STEERING_RESPONSE = 8.5;
 const CAR_COLLISION_RADIUS = 1.6;
@@ -38,6 +39,7 @@ function prepareTrack(track) {
   });
   const segments = points.map((point, index) => {
     const next = points[(index + 1) % points.length];
+    const nextIndex = (index + 1) % points.length;
     const dx = next[0] - point[0];
     const dz = next[1] - point[1];
     return {
@@ -47,9 +49,17 @@ function prepareTrack(track) {
       dz,
       length: Math.hypot(dx, dz),
       widthStart: edgeProfile[index].width,
-      widthEnd: edgeProfile[(index + 1) % points.length].width,
+      widthEnd: edgeProfile[nextIndex].width,
+      leftStart: edgeProfile[index].left,
+      leftEnd: edgeProfile[nextIndex].left,
+      rightStart: edgeProfile[index].right,
+      rightEnd: edgeProfile[nextIndex].right,
       outerWidthStart: runoffProfile[index].width,
-      outerWidthEnd: runoffProfile[(index + 1) % points.length].width,
+      outerWidthEnd: runoffProfile[nextIndex].width,
+      outerLeftStart: runoffProfile[index].left,
+      outerLeftEnd: runoffProfile[nextIndex].left,
+      outerRightStart: runoffProfile[index].right,
+      outerRightEnd: runoffProfile[nextIndex].right,
     };
   });
   let length = 0;
@@ -130,6 +140,30 @@ function constrainCarToMap(car, track) {
 
 function constrainCarToTrack(car, track) {
   const projection = projectToTrack(track, car.x, car.z);
+  if (
+    projection.edgeGeometry
+    &&
+    Number.isFinite(projection.lateralOffset)
+    && Number.isFinite(projection.outerLeftOffset)
+    && Number.isFinite(projection.outerRightOffset)
+  ) {
+    const lateralOffset = projection.lateralOffset;
+    const limitMargin = CAR_COLLISION_RADIUS * 0.5;
+    const leftLimit = Math.max(0, projection.outerLeftOffset - limitMargin);
+    const rightLimit = Math.max(0, -projection.outerRightOffset - limitMargin);
+    let correctedOffset = lateralOffset;
+    if (lateralOffset > leftLimit) correctedOffset = leftLimit;
+    else if (lateralOffset < -rightLimit) correctedOffset = -rightLimit;
+    if (correctedOffset !== lateralOffset) {
+      car.x += projection.normalX * (correctedOffset - lateralOffset);
+      car.z += projection.normalZ * (correctedOffset - lateralOffset);
+      car.speed *= 0.35;
+    }
+    car.onRunoff = lateralOffset > projection.leftOffset - limitMargin
+      || lateralOffset < projection.rightOffset + limitMargin;
+    return projection;
+  }
+
   const trackWidth = Number.isFinite(projection.width) ? projection.width : track.width;
   const barrierWidth = Number.isFinite(projection.outerWidth)
     ? projection.outerWidth
@@ -159,6 +193,11 @@ function getCarSpeedTuning({ onTrack, drsActive, drifting = false, botSkill = 1 
     maxSpeed: (onTrack ? (drsActive ? 36 : 28) * botSkill : 14) * cornerPenalty,
     acceleration: onTrack ? (drsActive ? 19 : 15) : 7,
   };
+}
+
+function getLateralGrip({ onTrack, weather = "sunny" }) {
+  const grip = onTrack ? 7.5 : 2.8;
+  return weather === "rain" ? Math.round(grip * 0.78 * 1000) / 1000 : grip;
 }
 
 function resolveCarCollisions(cars) {
@@ -249,19 +288,41 @@ function projectToTrack(track, x, z) {
     const projectedZ = segment.z + segment.dz * fraction;
     const distanceSquared = (x - projectedX) ** 2 + (z - projectedZ) ** 2;
     if (!nearest || distanceSquared < nearest.distanceSquared) {
+      const normalX = segment.dz / segment.length;
+      const normalZ = -segment.dx / segment.length;
+      const edgeOffset = (start, end, fallback) => {
+        if (!Array.isArray(start) || !Array.isArray(end)) return fallback;
+        const edgeX = start[0] + (end[0] - start[0]) * fraction;
+        const edgeZ = start[1] + (end[1] - start[1]) * fraction;
+        return (edgeX - projectedX) * normalX + (edgeZ - projectedZ) * normalZ;
+      };
+      const width = Number.isFinite(segment.widthStart)
+        ? segment.widthStart + (segment.widthEnd - segment.widthStart) * fraction
+        : track.width;
+      const outerWidth = Number.isFinite(segment.outerWidthStart)
+        ? segment.outerWidthStart + (segment.outerWidthEnd - segment.outerWidthStart) * fraction
+        : track.width + (track.runoffWidth || 0) * 2;
+      const leftOffset = edgeOffset(segment.leftStart, segment.leftEnd, width / 2);
+      const rightOffset = edgeOffset(segment.rightStart, segment.rightEnd, -width / 2);
+      const outerLeftOffset = edgeOffset(segment.outerLeftStart, segment.outerLeftEnd, outerWidth / 2);
+      const outerRightOffset = edgeOffset(segment.outerRightStart, segment.outerRightEnd, -outerWidth / 2);
       nearest = {
         distance: segment.start + segment.length * fraction,
         distanceSquared,
         x: projectedX,
         z: projectedZ,
+        normalX,
+        normalZ,
+        lateralOffset: (x - projectedX) * normalX + (z - projectedZ) * normalZ,
         segmentIndex,
         fraction,
-        width: Number.isFinite(segment.widthStart)
-          ? segment.widthStart + (segment.widthEnd - segment.widthStart) * fraction
-          : track.width,
-        outerWidth: Number.isFinite(segment.outerWidthStart)
-          ? segment.outerWidthStart + (segment.outerWidthEnd - segment.outerWidthStart) * fraction
-          : track.width + (track.runoffWidth || 0) * 2,
+        leftOffset,
+        rightOffset,
+        outerLeftOffset,
+        outerRightOffset,
+        edgeGeometry: Array.isArray(segment.outerLeftStart) && Array.isArray(segment.outerRightStart),
+        width: leftOffset - rightOffset,
+        outerWidth: outerLeftOffset - outerRightOffset,
         drs: segment.drs === true,
       };
     }
@@ -331,6 +392,7 @@ function createGameServer(options = {}) {
     laps: TOTAL_LAPS,
     mode: "race",
     difficulty: "normal",
+    weather: "sunny",
   };
   let nextBotId = 1;
   let countdownEndsAt = 0;
@@ -625,6 +687,7 @@ function createGameServer(options = {}) {
       totalLaps: raceSettings.laps,
       mode: raceSettings.mode,
       difficulty: raceSettings.difficulty,
+      weather: raceSettings.weather,
       track: {
         ...TRACKS[raceSettings.trackId],
         points: PREPARED_TRACKS[raceSettings.trackId].points,
@@ -716,11 +779,21 @@ function createGameServer(options = {}) {
       };
     }
 
-    const onTrack = distanceFromTrack <= Math.max(0, projection.width / 2 - CAR_COLLISION_RADIUS * 0.7);
+    const lateralDistance = projection.edgeGeometry
+      ? Math.abs(projection.lateralOffset)
+      : distanceFromTrack;
+    const onTrackWidth = projection.lateralOffset >= 0
+      ? projection.leftOffset
+      : -projection.rightOffset;
+    const barrierWidth = projection.lateralOffset >= 0
+      ? projection.outerLeftOffset
+      : -projection.outerRightOffset;
+    const onTrack = lateralDistance <= Math.max(0, onTrackWidth - CAR_COLLISION_RADIUS * 0.7);
+    const withinBarrier = lateralDistance <= Math.max(0, barrierWidth - CAR_COLLISION_RADIUS * 0.5);
     const drsEligible = getDrsStatus(projection, car, onTrack);
     car.drsActive = drsEligible;
     const tuning = getCarSpeedTuning({
-      onTrack,
+      onTrack: withinBarrier,
       drsActive: drsEligible,
       drifting: car.drifting,
       botSkill: car.isBot ? car.botSkill : 1,
@@ -751,8 +824,8 @@ function createGameServer(options = {}) {
     );
 
     if (Math.abs(car.speed) > 0.1) {
-      const grip = onTrack ? 7.5 : 2.8;
-      const slideDemand = car.steering * Math.max(0, Math.abs(car.speed) - 9) * (onTrack ? 0.22 : 0.3);
+      const grip = getLateralGrip({ onTrack: withinBarrier, weather: raceSettings.weather });
+      const slideDemand = car.steering * Math.max(0, Math.abs(car.speed) - 9) * (withinBarrier ? 0.22 : 0.3);
       car.lateralSpeed += (slideDemand - car.lateralSpeed) * Math.min(1, grip * dt);
       const steeringRate = car.speed / (STEERING_RADIUS + Math.abs(car.speed) * 0.2);
       car.yaw = wrapAngle(car.yaw - steeringRate * car.steering * dt);
@@ -917,8 +990,13 @@ function createGameServer(options = {}) {
           : hasNewSettings ? Number(payload.maxPlayers) : legacyBotCount + 1;
         const laps = payload.laps === undefined ? TOTAL_LAPS : Number(payload.laps);
         const difficulty = payload.difficulty === undefined ? "normal" : payload.difficulty;
+        const weather = payload.weather === undefined ? "sunny" : payload.weather;
         if (!["easy", "normal", "hard"].includes(difficulty)) {
           acknowledge({ ok: false, error: "La dificultad de los bots no es válida." });
+          return;
+        }
+        if (!ALLOWED_WEATHER.includes(weather)) {
+          acknowledge({ ok: false, error: "El clima seleccionado no está disponible." });
           return;
         }
         const trackId = String(payload.trackId || DEFAULT_TRACK_ID);
@@ -941,6 +1019,7 @@ function createGameServer(options = {}) {
           laps,
           mode,
           difficulty,
+          weather,
         };
       }
       const humanCount = [...cars.values()].filter((car) => !car.isBot).length;
@@ -1099,6 +1178,7 @@ function createGameServer(options = {}) {
           laps: TOTAL_LAPS,
           mode: "race",
           difficulty: "normal",
+          weather: "sunny",
         };
         nextBotId = 1;
         countdownEndsAt = 0;
@@ -1144,6 +1224,7 @@ module.exports = {
   projectToTrack,
   getDrsStatus,
   getCarSpeedTuning,
+  getLateralGrip,
   areHumanDriversFinished,
   calculateRaceRewards,
   settleRaceOnce,

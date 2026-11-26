@@ -57,10 +57,13 @@ let sessionToken = localStorage.getItem("race2win.sessionToken") || "";
 let selectedCategory = "color";
 let selectedStoreItemId = null;
 let selectedGarageItemId = null;
+let selectedWeather = "sunny";
 let rewardSignature = "";
 let recordToastSignature = "";
 let sceneReady = false;
 let sceneTrackId = null;
+let sceneWeather = null;
+let rainSystem = null;
 let renderLoopStarted = false;
 let lastSentInput = { throttle: 0, brake: 0, steer: 0 };
 let lastLeaderboardSignature = "";
@@ -79,6 +82,12 @@ let localPauseOpen = false;
 let cameraNoticeUntil = 0;
 const heldTouchPointers = new Map();
 const carLabels = new Map();
+const weatherOptions = {
+  sunny: { label: "SOLEADO", description: "Cielo despejado y agarre estándar." },
+  sunset: { label: "ATARDECER", description: "Luz cálida, sombras largas y niebla dorada." },
+  night: { label: "NOCHE", description: "Ambiente oscuro con faros y alumbrado de pista." },
+  rain: { label: "LLUVIOSO", description: "Lluvia visible, asfalto húmedo y menor agarre lateral." },
+};
 
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
 renderer.shadowMap.enabled = true;
@@ -187,19 +196,10 @@ function getTrackDistance(track, x, z) {
   return minimum;
 }
 
-function hasClearFootprint(track, x, z, width, depth, rotation = 0, margin = 2) {
-  const clearance = track.width / 2 + (track.runoffWidth || 0) + margin;
-  const cosine = Math.cos(rotation);
-  const sine = Math.sin(rotation);
-  return [-1, 0, 1].every((xSide) => [-1, 0, 1].every((zSide) => {
-    const localX = xSide * width / 2;
-    const localZ = zSide * depth / 2;
-    return getTrackDistance(
-      track,
-      x + localX * cosine + localZ * sine,
-      z + localZ * cosine - localX * sine
-    ) >= clearance;
-  }));
+function hasClearFootprint(track, x, z, width, depth, margin = 3) {
+  const clearance = track.width / 2 + (track.runoffWidth || 0) + Math.max(3, margin);
+  const footprintRadius = Math.hypot(width, depth) / 2;
+  return getTrackDistance(track, x, z) >= clearance + footprintRadius;
 }
 
 function drawTrackCards(tracks) {
@@ -233,14 +233,12 @@ function drawTrackCards(tracks) {
       Math.max(...smoothed.points.map((point) => point[1])),
     ];
     const padding = 8;
-    const scale = Math.min(
-      (140 - padding * 2) / Math.max(1, maxX - minX),
-      (70 - padding * 2) / Math.max(1, maxZ - minZ)
-    );
-    const offsetX = (140 - (maxX - minX) * scale) / 2;
-    const offsetY = (70 - (maxZ - minZ) * scale) / 2;
+    const scaleX = (140 - padding * 2) / Math.max(1, maxX - minX);
+    const scaleZ = (70 - padding * 2) / Math.max(1, maxZ - minZ);
+    const offsetX = padding;
+    const offsetY = padding;
     const route = smoothed.points.map(([x, z], index) => (
-      `${index === 0 ? "M" : "L"}${(offsetX + (x - minX) * scale).toFixed(1)},${(70 - offsetY - (z - minZ) * scale).toFixed(1)}`
+      `${index === 0 ? "M" : "L"}${(offsetX + (x - minX) * scaleX).toFixed(1)},${(70 - offsetY - (z - minZ) * scaleZ).toFixed(1)}`
     )).join(" ") + " Z";
     for (const className of ["track-outline", "track-route"]) {
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -253,10 +251,13 @@ function drawTrackCards(tracks) {
     const record = document.createElement("b");
     record.dataset.trackRecord = track.id;
     record.textContent = "RÉCORD --:--.---";
+    const location = document.createElement("span");
+    location.className = "track-card-location";
+    location.textContent = track.location;
     const summary = document.createElement("span");
-    summary.textContent = `${track.style.toUpperCase()} · ${track.width.toFixed(1)} m`;
+    summary.textContent = `${track.style} · ANCHO ${track.width.toFixed(1)} m`;
     meta.append(record, summary);
-    card.append(header, svg, meta);
+    card.append(header, svg, location, meta);
     card.setAttribute("aria-label", `${track.name}, circuito ${track.style.toLowerCase()}, ${track.width.toFixed(1)} metros de ancho`);
     cards.append(card);
     fetch(`/api/records/${encodeURIComponent(track.id)}`)
@@ -280,6 +281,40 @@ function selectTrack(trackId) {
     card.setAttribute("aria-pressed", String(selected));
   });
   document.querySelector("#track-selection-status").textContent = `${track.name.toUpperCase()} · ${track.style.toUpperCase()} · ${track.width.toFixed(1)} M`;
+  updateRaceConfigSummary();
+}
+
+function updateRaceConfigSummary() {
+  const track = trackData?.[document.querySelector("#track-select").value];
+  const weather = weatherOptions[selectedWeather];
+  const summary = document.querySelector("#race-config-summary");
+  if (summary && track && weather) summary.textContent = `${track.name.toUpperCase()} · ${weather.label}`;
+}
+
+function selectWeather(weatherId) {
+  const weather = weatherOptions[weatherId];
+  if (!weather) return;
+  selectedWeather = weatherId;
+  document.querySelector("#weather-select").value = weatherId;
+  document.querySelectorAll("[data-weather]").forEach((button) => {
+    const selected = button.dataset.weather === weatherId;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+  document.querySelector("#weather-summary").textContent = weather.label;
+  document.querySelector("#weather-description").textContent = weather.description;
+  updateRaceConfigSummary();
+}
+
+function setLobbyStep(stepId) {
+  document.querySelectorAll("[data-step-panel]").forEach((panel) => {
+    panel.classList.toggle("is-hidden", panel.dataset.stepPanel !== stepId);
+  });
+  document.querySelectorAll("[data-lobby-step]").forEach((button) => {
+    const selected = button.dataset.lobbyStep === stepId;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
 }
 
 function addCircuitDecoration(track) {
@@ -294,15 +329,15 @@ function addCircuitDecoration(track) {
       if (themeId === "sahara") {
         const width = 1.2 + seed % 4;
         const height = 0.8 + (seed % 5) * 0.48;
-        if (!hasClearFootprint(track, x, z, width, width, 0, 2)) continue;
+        if (!hasClearFootprint(track, x, z, width * 2, width * 1.44)) continue;
         rockData.push({ x, z, width, height });
       } else if (seed % 4 === 0) {
-        if (!hasClearFootprint(track, x, z, 2.4, 2.4, 0, 3)) continue;
+        if (!hasClearFootprint(track, x, z, 2.4, 2.4)) continue;
         treeData.push({ x, z, height: 2.8 + (seed % 4) * 0.4 });
       } else {
         const width = 5 + seed % 3;
         const depth = 5 + Math.floor(seed / 3) % 3;
-        if (!hasClearFootprint(track, x, z, width, depth, 0, 3)) continue;
+        if (!hasClearFootprint(track, x, z, width, depth)) continue;
         buildingsData.push({
           x,
           z,
@@ -450,24 +485,15 @@ function addCircuitDecoration(track) {
     stand.rotation.y = Math.atan2(-dz, dx);
     let hasSeats = false;
     for (let row = 0; row < 3; row += 1) {
-      const offset = track.width / 2 + track.runoffWidth + 3 + row * 0.75;
+      const standLength = Math.min(length * 0.8, 8);
+      const offset = track.width / 2 + track.runoffWidth + 3
+        + Math.hypot(standLength, 1.15) / 2 + row * 0.75;
       const candidateX = stand.position.x + normalX * side * offset;
       const candidateZ = stand.position.z + normalZ * side * offset;
-      const halfLength = Math.min(length * 0.8, 8) / 2;
-      const tangentX = dx / length;
-      const tangentZ = dz / length;
-      const clearOfTrack = hasClearFootprint(
-        track,
-        candidateX,
-        candidateZ,
-        Math.min(length * 0.8, 8),
-        1.15,
-        stand.rotation.y,
-        2.5
-      );
+      const clearOfTrack = hasClearFootprint(track, candidateX, candidateZ, standLength, 1.15);
       if (!clearOfTrack) continue;
       const seats = new THREE.Mesh(
-        new THREE.BoxGeometry(Math.min(length * 0.8, 8), 0.42, 1.15),
+        new THREE.BoxGeometry(standLength, 0.42, 1.15),
         new THREE.MeshStandardMaterial({ color: row % 2 ? "#d96d62" : "#e8d9ae", flatShading: true })
       );
       seats.position.set(0, 0.55 + row * 0.42, -side * offset);
@@ -482,25 +508,68 @@ function addCircuitDecoration(track) {
   }
 }
 
-function createTrack(track) {
+function createRainSystem() {
+  const count = 320;
+  const positions = new Float32Array(count * 6);
+  const offsets = Array.from({ length: count }, () => ({
+    x: (Math.random() - 0.5) * 58,
+    z: (Math.random() - 0.5) * 58,
+    y: Math.random() * 36 - 10,
+  }));
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const rain = new THREE.LineSegments(
+    geometry,
+    new THREE.LineBasicMaterial({ color: "#b9d7e5", transparent: true, opacity: 0.46, depthWrite: false })
+  );
+  rain.frustumCulled = false;
+  rainSystem = { mesh: rain, offsets };
+  scene.add(rain);
+}
+
+function updateRainSystem(dt) {
+  if (!rainSystem) return;
+  const attribute = rainSystem.mesh.geometry.attributes.position;
+  const positions = attribute.array;
+  for (let index = 0; index < rainSystem.offsets.length; index += 1) {
+    const drop = rainSystem.offsets[index];
+    drop.y -= 25 * dt;
+    if (drop.y < -12) drop.y = 25 + Math.random() * 12;
+    const offset = index * 6;
+    positions[offset] = camera.position.x + drop.x;
+    positions[offset + 1] = camera.position.y + drop.y;
+    positions[offset + 2] = camera.position.z + drop.z;
+    positions[offset + 3] = positions[offset] + 0.22;
+    positions[offset + 4] = positions[offset + 1] - 1.25;
+    positions[offset + 5] = positions[offset + 2] + 0.45;
+  }
+  attribute.needsUpdate = true;
+}
+
+function createTrack(track, weather = "sunny") {
   const theme = track.theme || {};
   const themeId = theme.id || "monaco";
-  const skyColor = theme.skyColor || "#a8d7dc";
-  const ambientIntensity = theme.lighting?.ambient || 1.5;
+  const looks = {
+    sunny: { sky: theme.skyColor || "#a8d7dc", fog: theme.fogColor || theme.skyColor || "#a8d7dc", ambient: 1.5, sun: theme.lighting?.sun || 3, fogNear: 0.85, fogFar: 2.25, asphalt: theme.asphaltColor || "#565f61", roughness: 0.95 },
+    sunset: { sky: "#e9a16f", fog: "#d98a64", ambient: 1.05, sun: 1.9, fogNear: 0.58, fogFar: 1.65, asphalt: theme.asphaltColor || "#565f61", roughness: 0.78 },
+    night: { sky: "#08111f", fog: "#111e31", ambient: 0.42, sun: 0.55, fogNear: 0.65, fogFar: 1.55, asphalt: "#252d37", roughness: 0.76 },
+    rain: { sky: "#8299a8", fog: "#8297a4", ambient: 0.86, sun: 1.35, fogNear: 0.36, fogFar: 1.12, asphalt: "#68747a", roughness: 0.34 },
+  }[weather] || null;
+  const skyColor = looks.sky;
   const mapRange = track.bounds * 0.9;
   scene.background = new THREE.Color(skyColor);
-  scene.fog = new THREE.Fog(theme.fogColor || skyColor, track.bounds * 0.85, track.bounds * 2.25);
+  scene.fog = new THREE.Fog(looks.fog, track.bounds * looks.fogNear, track.bounds * looks.fogFar);
   const ambient = new THREE.HemisphereLight(
-    themeId === "tokyo" ? "#a5c9ff" : "#e3f6e8",
+    weather === "night" ? "#9db4df" : weather === "sunset" ? "#ffd0a4" : weather === "rain" ? "#c0d2df" : themeId === "tokyo" ? "#a5c9ff" : "#e3f6e8",
     themeId === "sahara" ? "#795333" : "#536e5c",
-    ambientIntensity
+    looks.ambient
   );
   scene.add(ambient);
   const sun = new THREE.DirectionalLight(
-    themeId === "tokyo" ? "#a6c5ff" : themeId === "sahara" ? "#ffd0a1" : "#fff5d5",
-    theme.lighting?.sun || 3
+    weather === "sunset" ? "#ffae6a" : weather === "night" ? "#9ebeff" : weather === "rain" ? "#b3c9d8" : themeId === "tokyo" ? "#a6c5ff" : themeId === "sahara" ? "#ffd0a1" : "#fff5d5",
+    looks.sun
   );
-  sun.position.set(-mapRange * 0.28, mapRange * 0.42, -mapRange * 0.18);
+  sun.position.set(-mapRange * 0.28, mapRange * (weather === "sunset" ? 0.18 : 0.42), -mapRange * 0.18);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1536, 1536);
   sun.shadow.camera.left = -mapRange;
@@ -571,13 +640,18 @@ function createTrack(track) {
     const next = (index + 1) % track.points.length;
     indices.push(index * 2, next * 2, index * 2 + 1, index * 2 + 1, next * 2, next * 2 + 1);
   }
-  const asphalt = makeTexture(theme.asphaltColor || "#565f61", ["#70797a", "#40494c", "#838887", "#646e70"], 91, 8, "asphalt");
+  const asphalt = makeTexture(looks.asphalt, ["#70797a", "#40494c", "#838887", "#646e70"], 91, 8, "asphalt");
   const roadGeometry = new THREE.BufferGeometry();
   roadGeometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
   roadGeometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
   roadGeometry.setIndex(indices);
   roadGeometry.computeVertexNormals();
-  const road = new THREE.Mesh(roadGeometry, new THREE.MeshStandardMaterial({ map: asphalt, roughness: 0.95, side: THREE.DoubleSide }));
+  const road = new THREE.Mesh(roadGeometry, new THREE.MeshStandardMaterial({
+    map: asphalt,
+    roughness: looks.roughness,
+    metalness: weather === "rain" ? 0.16 : 0,
+    side: THREE.DoubleSide,
+  }));
   road.receiveShadow = true;
   scene.add(road);
 
@@ -759,10 +833,11 @@ function createTrack(track) {
     scene.add(detectionLine, arrows);
   }
 
-  if (themeId === "tokyo") {
+  if (themeId === "tokyo" || weather === "night") {
     const lampGeometry = new THREE.CylinderGeometry(0.08, 0.13, 6, 5);
     const lampMaterial = new THREE.MeshStandardMaterial({ color: "#36435d", metalness: 0.5, roughness: 0.48 });
-    const bulbMaterial = new THREE.MeshStandardMaterial({ color: "#5af5ed", emissive: "#38d8e6", emissiveIntensity: 3 });
+    const lampColor = weather === "night" ? "#ffedc4" : "#5af5ed";
+    const bulbMaterial = new THREE.MeshStandardMaterial({ color: lampColor, emissive: weather === "night" ? "#ffbd69" : "#38d8e6", emissiveIntensity: 3 });
     for (let index = 5; index < track.points.length; index += 18) {
       const point = track.points[index];
       const next = track.points[(index + 1) % track.points.length];
@@ -772,13 +847,13 @@ function createTrack(track) {
       const side = index % 2 ? 1 : -1;
       const x = (point[0] + next[0]) / 2 + dz / length * side * (track.width / 2 + track.runoffWidth + 3);
       const z = (point[1] + next[1]) / 2 - dx / length * side * (track.width / 2 + track.runoffWidth + 3);
-      if (getTrackDistance(track, x, z) < track.width / 2 + track.runoffWidth + 2.5) continue;
+      if (!hasClearFootprint(track, x, z, 0.3, 0.3)) continue;
       const pole = new THREE.Mesh(lampGeometry, lampMaterial);
       pole.position.set(x, 3, z);
       const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.34, 6, 5), bulbMaterial);
       bulb.position.set(x, 6.05, z);
       scene.add(pole, bulb);
-      const light = new THREE.PointLight("#46dce8", 5, 24, 2);
+      const light = new THREE.PointLight(lampColor, 5, 24, 2);
       light.position.copy(bulb.position);
       scene.add(light);
     }
@@ -797,6 +872,7 @@ function createTrack(track) {
   }
 
   addCircuitDecoration(track);
+  if (weather === "rain") createRainSystem();
 
   const start = track.points[0];
   const next = track.points[1];
@@ -1011,6 +1087,17 @@ function createCar(color, cosmetics = {}) {
     addPart(new THREE.BoxGeometry(0.22, 0.09, 0.12), lightFront, [side * 0.68, 0.76, -1.99]);
     addPart(new THREE.BoxGeometry(0.28, 0.1, 0.11), lightRear, [side * 0.64, 0.72, 1.96]);
   }
+  const headlights = [];
+  for (const side of [-1, 1]) {
+    const headlight = new THREE.SpotLight("#fff1c4", 12, 72, Math.PI / 8, 0.65, 1.4);
+    headlight.position.set(side * 0.58, 0.72, -1.88);
+    const target = new THREE.Object3D();
+    target.position.set(side * 0.7, 0.1, -28);
+    headlight.target = target;
+    headlight.visible = false;
+    car.add(headlight, target);
+    headlights.push(headlight);
+  }
 
   const wheelGroups = [];
   const frontWheelGroups = [];
@@ -1100,6 +1187,8 @@ function createCar(color, cosmetics = {}) {
   car.userData.trailGroup = trailGroup;
   car.userData.trailStyle = trailStyle?.style || "none";
   car.userData.brakeLightMaterial = lightRear;
+  car.userData.frontLightMaterial = lightFront;
+  car.userData.headlights = headlights;
   car.userData.cosmeticSignature = cosmeticSignature(cosmetics);
   car.traverse((object) => {
     if (object.isMesh) {
@@ -1108,6 +1197,12 @@ function createCar(color, cosmetics = {}) {
     }
   });
   return car;
+}
+
+function configureCarWeather(car, weather) {
+  const night = weather === "night";
+  car.userData.frontLightMaterial.emissiveIntensity = night ? 4 : 1.4;
+  for (const headlight of car.userData.headlights || []) headlight.visible = night;
 }
 
 function cosmeticSignature(cosmetics = {}) {
@@ -1334,6 +1429,7 @@ function renderFrame() {
     camera.updateProjectionMatrix();
     updateCarLabels();
   }
+  updateRainSystem(dt);
   updateGhostPosition();
   if (cameraNoticeUntil > performance.now() && raceToast.dataset.kind !== "achievement") {
     raceToast.textContent = ["CÁMARA ARCADE", "CÁMARA PANORÁMICA", "CÁMARA CAPÓ"][cameraMode];
@@ -1345,9 +1441,14 @@ function renderFrame() {
   if (sceneReady && !raceScreen.classList.contains("is-hidden")) renderer.render(scene, camera);
 }
 
-function initializeScene(track) {
-  if (sceneReady && sceneTrackId === track.id) return;
+function initializeScene(track, weather = "sunny") {
+  if (sceneReady && sceneTrackId === track.id && sceneWeather === weather) return;
   for (const carView of carViews.values()) disposeCar(carView.mesh);
+  if (rainSystem) {
+    rainSystem.mesh.geometry.dispose();
+    rainSystem.mesh.material.dispose();
+    rainSystem = null;
+  }
   scene.clear();
   carViews.clear();
   carLabels.clear();
@@ -1355,7 +1456,8 @@ function initializeScene(track) {
   ghostView = null;
   sceneReady = true;
   sceneTrackId = track.id;
-  createTrack(track);
+  sceneWeather = weather;
+  createTrack(track, weather);
   createEffectPool();
   if (pendingGhost?.samples?.length) createGhostView(pendingGhost);
   resizeRenderer();
@@ -1801,12 +1903,13 @@ function updateRaceClock(now) {
 function onRaceState(state) {
   const previousPhase = latestState?.phase;
   latestState = state;
+  const weather = weatherOptions[state.weather] ? state.weather : "sunny";
   if (state.phase === "countdown" && previousPhase !== "countdown") rewardSignature = "";
   raceElapsedMs = Number(state.raceElapsedMs) || 0;
   raceClockSyncAt = performance.now();
   raceClockRunning = state.phase === "racing";
   if (state.phase !== previousPhase) readControls();
-  initializeScene(state.track);
+  initializeScene(state.track, weather);
   if (pendingGhost?.samples?.length && !ghostView) createGhostView(pendingGhost);
   document.querySelector("#lap-total").textContent = ` / ${state.totalLaps}`;
   document.querySelector("#drs-indicator").classList.toggle(
@@ -1826,6 +1929,7 @@ function onRaceState(state) {
         disposeCar(carView.mesh);
       }
       const mesh = createCar(car.color, car.cosmetics);
+      configureCarWeather(mesh, weather);
       scene.add(mesh);
       carView = {
         mesh,
@@ -1845,6 +1949,7 @@ function onRaceState(state) {
       };
       carViews.set(car.id, carView);
     }
+    configureCarWeather(carView.mesh, weather);
     carView.targetPosition.set(car.x, 0, car.z);
     carView.targetYaw = car.yaw;
     carView.speed = car.speed;
@@ -2239,6 +2344,19 @@ function showMainScreen(screenId) {
 document.querySelectorAll(".nav-button").forEach((button) => {
   button.addEventListener("click", () => showMainScreen(button.dataset.screen));
 });
+document.querySelectorAll("[data-lobby-step]").forEach((button) => {
+  button.addEventListener("click", () => setLobbyStep(button.dataset.lobbyStep));
+});
+document.querySelectorAll("[data-next-step]").forEach((button) => {
+  button.addEventListener("click", () => setLobbyStep(button.dataset.nextStep));
+});
+document.querySelectorAll("[data-prev-step]").forEach((button) => {
+  button.addEventListener("click", () => setLobbyStep(button.dataset.prevStep));
+});
+document.querySelectorAll("[data-weather]").forEach((button) => {
+  button.addEventListener("click", () => selectWeather(button.dataset.weather));
+});
+selectWeather(selectedWeather);
 document.querySelector(".garage-quick-link").addEventListener("click", () => showMainScreen("garage-screen"));
 document.querySelector("#login-button").addEventListener("click", () => authenticate("/api/login"));
 document.querySelector("#register-button").addEventListener("click", () => authenticate("/api/register"));
@@ -2273,52 +2391,52 @@ document.querySelectorAll(".participant-pill").forEach((button) => {
     });
     updateGridStatus();
   });
-  document.querySelectorAll("[data-race-mode]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const mode = button.dataset.raceMode;
-      document.querySelector("#race-mode").value = mode;
-      document.querySelectorAll("[data-race-mode]").forEach((option) => {
-        const selected = option === button;
-        option.classList.toggle("is-selected", selected);
-        option.setAttribute("aria-pressed", String(selected));
-      });
-      const timeTrial = mode === "timeTrial";
-      document.querySelector("#bots-enabled").disabled = timeTrial;
-      document.querySelectorAll(".participant-pill, .difficulty-pill").forEach((option) => {
-        option.disabled = timeTrial;
-      });
-      document.querySelector(".bots-switch").classList.toggle("is-disabled", timeTrial);
-      document.querySelector("#bots-enabled").checked = timeTrial ? false : document.querySelector("#bots-enabled").checked;
-      const count = timeTrial ? 1 : selectedMaxPlayers;
-      document.querySelector("#max-players").value = String(count);
-      document.querySelector("#participant-count").textContent = String(count);
-      document.querySelectorAll(".participant-pill").forEach((pill) => {
-        const selected = Number(pill.dataset.playerCount) === count;
-        pill.classList.toggle("is-selected", selected);
-        pill.setAttribute("aria-pressed", String(selected));
-      });
-      updateGridStatus();
+});
+document.querySelectorAll("[data-race-mode]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const mode = button.dataset.raceMode;
+    document.querySelector("#race-mode").value = mode;
+    document.querySelectorAll("[data-race-mode]").forEach((option) => {
+      const selected = option === button;
+      option.classList.toggle("is-selected", selected);
+      option.setAttribute("aria-pressed", String(selected));
+    });
+    const timeTrial = mode === "timeTrial";
+    document.querySelector("#bots-enabled").disabled = timeTrial;
+    document.querySelectorAll(".participant-pill, .difficulty-pill").forEach((option) => {
+      option.disabled = timeTrial;
+    });
+    document.querySelector(".bots-switch").classList.toggle("is-disabled", timeTrial);
+    document.querySelector("#bots-enabled").checked = timeTrial ? false : document.querySelector("#bots-enabled").checked;
+    const count = timeTrial ? 1 : selectedMaxPlayers;
+    document.querySelector("#max-players").value = String(count);
+    document.querySelector("#participant-count").textContent = String(count);
+    document.querySelectorAll(".participant-pill").forEach((pill) => {
+      const selected = Number(pill.dataset.playerCount) === count;
+      pill.classList.toggle("is-selected", selected);
+      pill.setAttribute("aria-pressed", String(selected));
+    });
+    updateGridStatus();
+  });
+});
+document.querySelectorAll("[data-laps]").forEach((button) => {
+  button.addEventListener("click", () => {
+    document.querySelector("#race-laps").value = button.dataset.laps;
+    updateGridStatus();
+    document.querySelectorAll("[data-laps]").forEach((option) => {
+      const selected = option === button;
+      option.classList.toggle("is-selected", selected);
+      option.setAttribute("aria-pressed", String(selected));
     });
   });
-  document.querySelectorAll("[data-laps]").forEach((button) => {
-    button.addEventListener("click", () => {
-      document.querySelector("#race-laps").value = button.dataset.laps;
-      updateGridStatus();
-      document.querySelectorAll("[data-laps]").forEach((option) => {
-        const selected = option === button;
-        option.classList.toggle("is-selected", selected);
-        option.setAttribute("aria-pressed", String(selected));
-      });
-    });
-  });
-  document.querySelectorAll("[data-difficulty]").forEach((button) => {
-    button.addEventListener("click", () => {
-      document.querySelector("#bot-difficulty").value = button.dataset.difficulty;
-      document.querySelectorAll("[data-difficulty]").forEach((option) => {
-        const selected = option === button;
-        option.classList.toggle("is-selected", selected);
-        option.setAttribute("aria-pressed", String(selected));
-      });
+});
+document.querySelectorAll("[data-difficulty]").forEach((button) => {
+  button.addEventListener("click", () => {
+    document.querySelector("#bot-difficulty").value = button.dataset.difficulty;
+    document.querySelectorAll("[data-difficulty]").forEach((option) => {
+      const selected = option === button;
+      option.classList.toggle("is-selected", selected);
+      option.setAttribute("aria-pressed", String(selected));
     });
   });
 });
@@ -2352,6 +2470,7 @@ joinForm.addEventListener("submit", (event) => {
       mode: formData.get("mode"),
       laps: Number(formData.get("laps")),
       difficulty: formData.get("difficulty"),
+      weather: document.querySelector("#weather-select").value,
       token: sessionToken || undefined,
     }, (result) => {
       if (!result?.ok) {

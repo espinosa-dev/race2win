@@ -18,6 +18,7 @@ const {
   getCarSpeedTuning,
   getDrsStatus,
   getFinishTiming,
+  getLateralGrip,
   getTrackPosition,
   prepareTrack,
   projectToTrack,
@@ -125,6 +126,25 @@ function segmentsIntersect(a, b, c, d) {
     || (second === 0 && onSegment(a, b, d))
     || (third === 0 && onSegment(c, d, a))
     || (fourth === 0 && onSegment(c, d, b));
+}
+
+function pointSegmentDistance(point, start, end) {
+  const dx = end[0] - start[0];
+  const dz = end[1] - start[1];
+  const fraction = Math.max(0, Math.min(1, (
+    (point[0] - start[0]) * dx + (point[1] - start[1]) * dz
+  ) / (dx * dx + dz * dz)));
+  return Math.hypot(point[0] - start[0] - dx * fraction, point[1] - start[1] - dz * fraction);
+}
+
+function segmentDistance(firstStart, firstEnd, secondStart, secondEnd) {
+  if (segmentsIntersect(firstStart, firstEnd, secondStart, secondEnd)) return 0;
+  return Math.min(
+    pointSegmentDistance(firstStart, secondStart, secondEnd),
+    pointSegmentDistance(firstEnd, secondStart, secondEnd),
+    pointSegmentDistance(secondStart, firstStart, firstEnd),
+    pointSegmentDistance(secondEnd, firstStart, firstEnd)
+  );
 }
 
 beforeEach(async () => {
@@ -266,7 +286,7 @@ test("keeps circuit centerlines free of crossing and overlapping sections", () =
   }
 });
 
-test("keeps widened road edges non-intersecting through tight corners", () => {
+test("keeps every circuit edge clear and at its requested full width", () => {
   for (const track of Object.values(tracks)) {
     const smoothedTrack = getSmoothedTrack(track);
     assert.equal(smoothedTrack.points.length, track.points.length * 4);
@@ -276,48 +296,98 @@ test("keeps widened road edges non-intersecting through tight corners", () => {
     ]) {
       const edges = getTrackEdges({ ...smoothedTrack, width });
       for (const edge of edges) {
-        assert.ok(edge.width > 0 && edge.width <= width);
+        assert.equal(edge.width, width, `${track.name} ${label} edge width was reduced`);
       }
-      for (const side of ["left", "right"]) {
-        for (let first = 0; first < edges.length; first += 1) {
-          for (let second = first + 2; second < edges.length; second += 1) {
-            if (first === 0 && second === edges.length - 1) continue;
-            assert.equal(
-              segmentsIntersect(
-                edges[first][side],
-                edges[(first + 1) % edges.length][side],
-                edges[second][side],
-                edges[(second + 1) % edges.length][side]
-              ),
-              false,
-              `${track.name} ${label} ${side} edge overlaps at ${first} and ${second}`
-            );
-          }
-        }
-        for (let leftIndex = 0; leftIndex < edges.length; leftIndex += 1) {
-          for (let rightIndex = 0; rightIndex < edges.length; rightIndex += 1) {
-            const adjacent = Math.min(
-              (rightIndex - leftIndex + edges.length) % edges.length,
-              (leftIndex - rightIndex + edges.length) % edges.length
-            ) <= 1;
-            if (adjacent) continue;
-            assert.equal(
-              segmentsIntersect(
-                edges[leftIndex].left,
-                edges[(leftIndex + 1) % edges.length].left,
-                edges[rightIndex].right,
-                edges[(rightIndex + 1) % edges.length].right
-              ),
-              false,
-              `${track.name} ${label} inner and outer borders overlap around ${leftIndex} and ${rightIndex}`
-            );
+      for (let first = 0; first < edges.length; first += 1) {
+        for (let second = first + 1; second < edges.length; second += 1) {
+          const adjacent = Math.min(second - first, edges.length - (second - first)) <= 1;
+          if (adjacent) continue;
+          for (const firstSide of ["left", "right"]) {
+            for (const secondSide of ["left", "right"]) {
+              assert.equal(
+                segmentsIntersect(
+                  edges[first][firstSide],
+                  edges[(first + 1) % edges.length][firstSide],
+                  edges[second][secondSide],
+                  edges[(second + 1) % edges.length][secondSide]
+                ),
+                false,
+                `${track.name} ${label} ${firstSide}/${secondSide} borders intersect at ${first} and ${second}`
+              );
+            }
           }
         }
       }
-      assert.ok(
-        edges.filter((edge) => edge.width >= width * 0.8).length >= edges.length * 0.4,
-        `${track.name} ${label} should preserve most of its requested width`
-      );
+    }
+    const roadEdges = getTrackEdges({ ...smoothedTrack, width: track.width });
+    const runoffEdges = getTrackEdges({
+      ...smoothedTrack,
+      width: track.width + track.runoffWidth * 2,
+    });
+    for (let first = 0; first < roadEdges.length; first += 1) {
+      for (let second = 0; second < runoffEdges.length; second += 1) {
+        for (const roadSide of ["left", "right"]) {
+          for (const runoffSide of ["left", "right"]) {
+            assert.equal(
+              segmentsIntersect(
+                roadEdges[first][roadSide],
+                roadEdges[(first + 1) % roadEdges.length][roadSide],
+                runoffEdges[second][runoffSide],
+                runoffEdges[(second + 1) % runoffEdges.length][runoffSide]
+              ),
+              false,
+              `${track.name} asphalt and runoff borders intersect at ${first}/${second}`
+            );
+          }
+        }
+      }
+    }
+
+    const points = smoothedTrack.points;
+    const clearance = track.width + track.runoffWidth * 2 + 12;
+    for (let first = 0; first < points.length; first += 1) {
+      for (let second = first + 2; second < points.length; second += 1) {
+        const pathSeparation = Math.min(second - first, points.length - (second - first));
+        if (pathSeparation <= 8) continue;
+        const distance = segmentDistance(
+          points[first],
+          points[(first + 1) % points.length],
+          points[second],
+          points[(second + 1) % points.length]
+        );
+        assert.ok(
+          distance >= clearance,
+          `${track.name} sections ${first}/${second} are only ${distance.toFixed(2)}m apart (need ${clearance}m)`
+        );
+      }
+    }
+  }
+});
+
+test("keeps cars at full speed on asphalt and deep runoff across every circuit", () => {
+  for (const source of Object.values(tracks)) {
+    const track = prepareTrack(source);
+    for (const segment of track.segments) {
+      const position = getTrackPosition(track, segment.start + segment.length / 2);
+      const normalX = position.tangentZ;
+      const normalZ = -position.tangentX;
+      for (const side of [-1, 1]) {
+        for (const distance of [
+          source.width / 2,
+          source.width / 2 + source.runoffWidth * 0.8,
+        ]) {
+          const car = {
+            x: position.x + normalX * distance * side,
+            z: position.z + normalZ * distance * side,
+            speed: 20,
+          };
+          const original = { x: car.x, z: car.z };
+          constrainCarToTrack(car, track);
+          assert.equal(car.speed, 20, `${source.name} braked at offset ${distance}`);
+          assert.ok(Math.abs(car.x - original.x) < 1e-8, `${source.name} moved a car in x at offset ${distance}`);
+          assert.ok(Math.abs(car.z - original.z) < 1e-8, `${source.name} moved a car in z at offset ${distance}`);
+        }
+      }
     }
   }
 });
@@ -377,6 +447,13 @@ test("activates DRS only on-track under acceleration and applies its speed boost
     maxSpeed: 14,
     acceleration: 7,
   });
+});
+
+test("reduces lateral grip in rain without changing dry-weather grip", () => {
+  assert.equal(getLateralGrip({ onTrack: true }), 7.5);
+  assert.equal(getLateralGrip({ onTrack: false }), 2.8);
+  assert.equal(getLateralGrip({ onTrack: true, weather: "rain" }), 5.85);
+  assert.equal(getLateralGrip({ onTrack: false, weather: "rain" }), 2.184);
 });
 
 test("keeps a car inside the track barriers and slows it on impact", () => {
@@ -696,6 +773,7 @@ test("validates lap counts and keeps time trials to one human without bots", asy
     assert.equal(state.totalLaps, 5);
     assert.equal(state.difficulty, "hard");
     assert.equal(state.mode, "race");
+    assert.equal(state.weather, "sunny");
   } finally {
     race.disconnect();
   }
@@ -741,6 +819,42 @@ test("validates lap counts and keeps time trials to one human without bots", asy
   } finally {
     timeTrial.disconnect();
     extra.disconnect();
+  }
+});
+
+test("validates and synchronizes sunny, sunset, night, and rain weather", async () => {
+  for (const weather of ["sunny", "sunset", "night", "rain"]) {
+    const client = createClient(baseUrl, { transports: ["websocket"], reconnection: false });
+    try {
+      await connect(client);
+      const statePromise = waitForRaceState(client, (state) => state.humanCount === 1);
+      const joined = await new Promise((resolve) => {
+        client.emit("joinRace", {
+          name: `Clima ${weather}`,
+          maxPlayers: 1,
+          botsEnabled: false,
+          weather,
+        }, resolve);
+      });
+      assert.equal(joined.ok, true);
+      const state = await statePromise;
+      assert.equal(state.weather, weather);
+    } finally {
+      client.disconnect();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+
+  const invalidClient = createClient(baseUrl, { transports: ["websocket"], reconnection: false });
+  try {
+    await connect(invalidClient);
+    const invalid = await new Promise((resolve) => {
+      invalidClient.emit("joinRace", { name: "Clima inválido", weather: "snow" }, resolve);
+    });
+    assert.equal(invalid.ok, false);
+    assert.match(invalid.error, /clima/i);
+  } finally {
+    invalidClient.disconnect();
   }
 });
 

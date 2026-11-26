@@ -45,107 +45,142 @@
           <div>
             <p class="eyebrow"><span class="eyebrow-mark"></span> RACE CONTROL · TEMPORADA 01</p>
             <h1>PREPARA LA <span>SALIDA.</span></h1>
-            <p class="paddock-subtitle">Elige trazado, configura la parrilla y sal a por la victoria.</p>
+            <p class="paddock-subtitle">Prepara el circuito y las condiciones; después configura tu carrera.</p>
           </div>
           <div class="grid-status"><span class="status-dot"></span><span><b>PADDOCK ABIERTO</b><small>3 VUELTAS · MULTIJUGADOR LAN</small></span></div>
         </div>
+        <nav class="lobby-step-tabs" role="tablist" aria-label="Pasos para preparar la carrera">
+          <button class="lobby-step-tab is-active" type="button" role="tab" aria-selected="true" data-lobby-step="environment">
+            <span>01</span><span><b>CIRCUITO Y AMBIENTE</b><small>Mapa · clima · hora del día</small></span>
+          </button>
+          <button class="lobby-step-tab" type="button" role="tab" aria-selected="false" data-lobby-step="rules">
+            <span>02</span><span><b>REGLAS Y SALA</b><small>Modo · vueltas · participantes</small></span>
+          </button>
+        </nav>
         <div class="paddock-layout">
-          <div class="paddock-main">
-            <section class="showroom-panel" aria-label="Coche del piloto">
-              <div class="section-heading"><span>01 <b>·</b> TU COCHE</span><span id="showroom-status">CONFIGURACIÓN BASE</span></div>
-              <div class="showroom-stage">
-                <div class="stage-tag stage-tag-left"><span class="status-dot"></span> READY TO RACE</div>
-                <div class="stage-tag stage-tag-right">R2W <b>·</b> 03</div>
-                <div id="menu-preview" class="car-preview menu-preview" role="img" aria-label="Vista 3D del coche equipado"></div>
-                <div class="stage-caption"><span>GARAGE / 01</span><b id="menu-preview-label">CONFIGURACIÓN BASE</b></div>
-              </div>
-              <div class="loadout-strip">
-                <div><small>EQUIPAMIENTO ACTUAL</small><div id="loadout-summary" class="loadout-items"></div></div>
-                <button class="garage-quick-link" type="button" data-screen="garage-screen">PERSONALIZAR EN GARAJE <span aria-hidden="true">↗</span></button>
-              </div>
-            </section>
-            <section class="track-picker" aria-label="Selecciona un circuito">
-              <div class="section-heading"><span>02 <b>·</b> SELECCIONA CIRCUITO</span><span id="track-selection-status" class="section-side-note">MONACO · TÉCNICO</span></div>
-              <div id="track-cards" class="track-cards">
-              </div>
-            </section>
-          </div>
-          <aside class="lobby-panel" aria-label="Panel del piloto y configuración de carrera">
-            <section class="pilot-panel">
-              <div class="pilot-panel-heading"><span>PILOTO <b>·</b> PERFIL</span><span id="pilot-account-status">INVITADO</span></div>
-              <div class="pilot-identity"><span id="pilot-initial" class="pilot-initial">P</span><span><small>EN LA PARRILLA</small><b id="pilot-display-name">Piloto</b></span></div>
-              <div class="pilot-stats" aria-label="Estadísticas del piloto">
-                <span><b id="pilot-points">—</b><small>PUNTOS</small></span>
-                <span><b id="pilot-races">—</b><small>CARRERAS</small></span>
-                <span><b id="pilot-wins">—</b><small>VICTORIAS</small></span>
-                <span><b id="pilot-podiums">—</b><small>PODIOS</small></span>
-                <span class="pilot-best-lap"><b id="pilot-best-lap">—</b><small>MEJOR VUELTA</small></span>
-              </div>
-            </section>
-            <form id="join-form" class="join-card">
-              <div class="card-topline"><span>03 · CONFIGURA LA SALA</span><span class="card-number">GRID</span></div>
-              <label for="driver-name">NOMBRE EN CARRERA</label>
-              <input id="driver-name" name="name" maxlength="16" placeholder="Tu apodo" autocomplete="nickname" value="Piloto" required>
-              <p id="pilot-name-note" class="pilot-name-note">Como invitado no se guardan puntos ni RaceCoins.</p>
-              <div class="race-options">
-                <div class="option-block">
-                  <span class="option-label">MODO</span>
-                  <input id="race-mode" name="mode" type="hidden" value="race">
-                  <div class="option-pills" role="group" aria-label="Modo de juego">
-                    <button class="option-pill is-selected" type="button" data-race-mode="race" aria-pressed="true">CARRERA</button>
-                    <button class="option-pill" type="button" data-race-mode="timeTrial" aria-pressed="false">CONTRARRELOJ</button>
+          <section class="lobby-step" data-step-panel="environment" role="tabpanel">
+            <div class="environment-grid">
+              <section class="track-picker" aria-label="Selecciona un circuito">
+                <div class="section-heading"><span>ELIGE TU CIRCUITO</span><span id="track-selection-status" class="section-side-note">MONACO · TÉCNICO</span></div>
+                <div id="track-cards" class="track-cards"></div>
+              </section>
+              <aside class="environment-side">
+                <section class="weather-picker" aria-label="Selecciona clima y hora del día">
+                  <div class="section-heading"><span>CLIMA Y HORA DEL DÍA</span><span id="weather-summary">SOLEADO</span></div>
+                  <input id="weather-select" name="weather" type="hidden" value="sunny">
+                  <div class="weather-options" role="group" aria-label="Clima">
+                    <button class="weather-card is-selected" type="button" data-weather="sunny" aria-pressed="true"><span aria-hidden="true">☀</span><b>SOLEADO</b><small>Luz clara</small></button>
+                    <button class="weather-card" type="button" data-weather="sunset" aria-pressed="false"><span aria-hidden="true">◒</span><b>ATARDECER</b><small>Luz dorada</small></button>
+                    <button class="weather-card" type="button" data-weather="night" aria-pressed="false"><span aria-hidden="true">✦</span><b>NOCHE</b><small>Faros activos</small></button>
+                    <button class="weather-card" type="button" data-weather="rain" aria-pressed="false"><span aria-hidden="true">☂</span><b>LLUVIOSO</b><small>Menos agarre</small></button>
+                  </div>
+                  <p id="weather-description" class="weather-description">Cielo despejado y agarre estándar.</p>
+                </section>
+                <section class="showroom-panel" aria-label="Coche del piloto">
+                  <div class="section-heading"><span>TU COCHE EQUIPADO</span><span id="showroom-status">CONFIGURACIÓN BASE</span></div>
+                  <div class="showroom-stage">
+                    <div class="stage-tag stage-tag-left"><span class="status-dot"></span> READY TO RACE</div>
+                    <div class="stage-tag stage-tag-right">R2W <b>·</b> 03</div>
+                    <div id="menu-preview" class="car-preview menu-preview" role="img" aria-label="Vista 3D del coche equipado"></div>
+                    <div class="stage-caption"><span>GARAGE / 01</span><b id="menu-preview-label">CONFIGURACIÓN BASE</b></div>
+                  </div>
+                  <div class="loadout-strip">
+                    <div><small>EQUIPAMIENTO ACTUAL</small><div id="loadout-summary" class="loadout-items"></div></div>
+                    <button class="garage-quick-link" type="button" data-screen="garage-screen">PERSONALIZAR EN GARAJE <span aria-hidden="true">↗</span></button>
+                  </div>
+                </section>
+              </aside>
+            </div>
+            <div class="lobby-step-actions">
+              <span>TRAZADO Y AMBIENTE LISTOS</span>
+              <button class="primary-button" type="button" data-next-step="rules">CONTINUAR A CONFIGURACIÓN <span aria-hidden="true">→</span></button>
+            </div>
+          </section>
+          <section class="lobby-step is-hidden" data-step-panel="rules" role="tabpanel">
+            <div class="rules-layout">
+              <form id="join-form" class="join-card">
+                <div class="card-topline"><span>CONFIGURA LA CARRERA</span><span class="card-number">GRID</span></div>
+                <div class="race-config-summary"><span id="race-config-summary">MONACO · SOLEADO</span><button type="button" data-prev-step="environment">CAMBIAR CIRCUITO / CLIMA</button></div>
+                <label for="driver-name">NOMBRE DEL PILOTO</label>
+                <input id="driver-name" name="name" maxlength="16" placeholder="Tu apodo" autocomplete="nickname" value="Piloto" required>
+                <p id="pilot-name-note" class="pilot-name-note">Como invitado no se guardan puntos ni RaceCoins.</p>
+                <div class="race-options">
+                  <div class="option-block">
+                    <span class="option-label">MODO DE JUEGO</span>
+                    <input id="race-mode" name="mode" type="hidden" value="race">
+                    <div class="option-pills" role="group" aria-label="Modo de juego">
+                      <button class="option-pill is-selected" type="button" data-race-mode="race" aria-pressed="true">CARRERA</button>
+                      <button class="option-pill" type="button" data-race-mode="timeTrial" aria-pressed="false">CONTRARRELOJ</button>
+                    </div>
+                  </div>
+                  <div class="option-block">
+                    <span class="option-label">NÚMERO DE VUELTAS</span>
+                    <input id="race-laps" name="laps" type="hidden" value="3">
+                    <div class="option-pills lap-pills" role="group" aria-label="Número de vueltas">
+                      <button class="option-pill" type="button" data-laps="1" aria-pressed="false">1</button>
+                      <button class="option-pill is-selected" type="button" data-laps="3" aria-pressed="true">3</button>
+                      <button class="option-pill" type="button" data-laps="5" aria-pressed="false">5</button>
+                      <button class="option-pill" type="button" data-laps="7" aria-pressed="false">7</button>
+                    </div>
                   </div>
                 </div>
-                <div class="option-block">
-                  <span class="option-label">VUELTAS</span>
-                  <input id="race-laps" name="laps" type="hidden" value="3">
-                  <div class="option-pills lap-pills" role="group" aria-label="Número de vueltas">
-                    <button class="option-pill" type="button" data-laps="1" aria-pressed="false">1</button>
-                    <button class="option-pill is-selected" type="button" data-laps="3" aria-pressed="true">3</button>
-                    <button class="option-pill" type="button" data-laps="5" aria-pressed="false">5</button>
-                    <button class="option-pill" type="button" data-laps="7" aria-pressed="false">7</button>
-                  </div>
+                <input id="track-select" name="trackId" type="hidden" value="monaco">
+                <input id="max-players" name="maxPlayers" type="hidden" value="4">
+                <div class="participants-heading"><span>PARTICIPANTES</span><b><span id="participant-count">4</span> / 8</b></div>
+                <div class="participant-pills" role="group" aria-label="Número de participantes">
+                  <button type="button" class="participant-pill" data-player-count="1" aria-pressed="false">1</button>
+                  <button type="button" class="participant-pill" data-player-count="2" aria-pressed="false">2</button>
+                  <button type="button" class="participant-pill" data-player-count="3" aria-pressed="false">3</button>
+                  <button type="button" class="participant-pill is-selected" data-player-count="4" aria-pressed="true">4</button>
+                  <button type="button" class="participant-pill" data-player-count="5" aria-pressed="false">5</button>
+                  <button type="button" class="participant-pill" data-player-count="6" aria-pressed="false">6</button>
+                  <button type="button" class="participant-pill" data-player-count="7" aria-pressed="false">7</button>
+                  <button type="button" class="participant-pill" data-player-count="8" aria-pressed="false">8</button>
                 </div>
-              </div>
-              <input id="track-select" name="trackId" type="hidden" value="monaco">
-              <input id="max-players" name="maxPlayers" type="hidden" value="4">
-              <div class="participants-heading"><span>PARTICIPANTES</span><b><span id="participant-count">4</span> / 8</b></div>
-              <div class="participant-pills" role="group" aria-label="Número de participantes">
-                <button type="button" class="participant-pill" data-player-count="1" aria-pressed="false">1</button>
-                <button type="button" class="participant-pill" data-player-count="2" aria-pressed="false">2</button>
-                <button type="button" class="participant-pill" data-player-count="3" aria-pressed="false">3</button>
-                <button type="button" class="participant-pill is-selected" data-player-count="4" aria-pressed="true">4</button>
-                <button type="button" class="participant-pill" data-player-count="5" aria-pressed="false">5</button>
-                <button type="button" class="participant-pill" data-player-count="6" aria-pressed="false">6</button>
-                <button type="button" class="participant-pill" data-player-count="7" aria-pressed="false">7</button>
-                <button type="button" class="participant-pill" data-player-count="8" aria-pressed="false">8</button>
-              </div>
-              <label class="bots-switch" for="bots-enabled">
-                <input id="bots-enabled" name="botsEnabled" type="checkbox" checked>
-                <span class="switch-indicator" aria-hidden="true"></span>
-                <span>COMPLETAR PLAZAS CON BOTS</span>
-                <small>+</small>
-              </label>
-              <div class="difficulty-row" role="group" aria-label="Dificultad de los bots">
-                <span>DIFICULTAD IA</span>
-                <input id="bot-difficulty" name="difficulty" type="hidden" value="normal">
-                <button class="difficulty-pill" type="button" data-difficulty="easy" aria-pressed="false">FÁCIL</button>
-                <button class="difficulty-pill is-selected" type="button" data-difficulty="normal" aria-pressed="true">NORMAL</button>
-                <button class="difficulty-pill" type="button" data-difficulty="hard" aria-pressed="false">DIFÍCIL</button>
-              </div>
-              <button class="primary-button" type="submit">ENTRAR EN PISTA <span aria-hidden="true">→</span></button>
-              <p class="form-error" id="join-error" role="alert"></p>
-              <div class="lan-invite">
-                <div><small>INVITA A TU ESCUDERÍA</small><a id="lan-url" href="http://localhost:3000">http://localhost:3000</a></div>
-                <button id="copy-lan" type="button">COPIAR ENLACE LAN</button>
-              </div>
-              <p id="lan-copy-status" class="lan-copy-status" aria-live="polite"></p>
-            </form>
-            <section class="global-rank-panel" aria-label="Clasificación global de pilotos">
-              <div class="pilot-panel-heading"><span>TOP PILOTOS <b>·</b> GLOBAL</span><span>TOP 10</span></div>
-              <ol id="global-leaderboard" class="global-leaderboard"><li class="rank-empty">Cargando clasificación...</li></ol>
-            </section>
-          </aside>
+                <label class="bots-switch" for="bots-enabled">
+                  <input id="bots-enabled" name="botsEnabled" type="checkbox" checked>
+                  <span class="switch-indicator" aria-hidden="true"></span>
+                  <span>COMPLETAR PLAZAS CON BOTS</span>
+                  <small>+</small>
+                </label>
+                <div class="difficulty-row" role="group" aria-label="Dificultad de los bots">
+                  <span>DIFICULTAD DE IA</span>
+                  <input id="bot-difficulty" name="difficulty" type="hidden" value="normal">
+                  <button class="difficulty-pill" type="button" data-difficulty="easy" aria-pressed="false">FÁCIL</button>
+                  <button class="difficulty-pill is-selected" type="button" data-difficulty="normal" aria-pressed="true">NORMAL</button>
+                  <button class="difficulty-pill" type="button" data-difficulty="hard" aria-pressed="false">DIFÍCIL</button>
+                </div>
+                <button class="primary-button" type="submit">ENTRAR EN PISTA <span aria-hidden="true">→</span></button>
+                <p class="form-error" id="join-error" role="alert"></p>
+                <div class="lan-invite">
+                  <div><small>INVITA A TU ESCUDERÍA</small><a id="lan-url" href="http://localhost:3000">http://localhost:3000</a></div>
+                  <button id="copy-lan" type="button">COPIAR ENLACE LAN</button>
+                </div>
+                <p id="lan-copy-status" class="lan-copy-status" aria-live="polite"></p>
+              </form>
+              <aside class="pilot-side" aria-label="Perfil y clasificación del piloto">
+                <section class="pilot-panel">
+                  <div class="pilot-panel-heading"><span>ESTADÍSTICAS DEL PILOTO</span><span id="pilot-account-status">INVITADO</span></div>
+                  <div class="pilot-identity"><span id="pilot-initial" class="pilot-initial">P</span><span><small>EN LA PARRILLA</small><b id="pilot-display-name">Piloto</b></span></div>
+                  <div class="pilot-stats" aria-label="Estadísticas del piloto">
+                    <span><b id="pilot-points">—</b><small>PUNTOS</small></span>
+                    <span><b id="pilot-races">—</b><small>CARRERAS</small></span>
+                    <span><b id="pilot-wins">—</b><small>VICTORIAS</small></span>
+                    <span><b id="pilot-podiums">—</b><small>PODIOS</small></span>
+                    <span class="pilot-best-lap"><b id="pilot-best-lap">—</b><small>MEJOR VUELTA</small></span>
+                  </div>
+                </section>
+                <section class="global-rank-panel" aria-label="Clasificación global de pilotos">
+                  <div class="pilot-panel-heading"><span>TOP PILOTOS · GLOBAL</span><span>TOP 10</span></div>
+                  <ol id="global-leaderboard" class="global-leaderboard"><li class="rank-empty">Cargando clasificación...</li></ol>
+                </section>
+              </aside>
+            </div>
+            <div class="lobby-step-actions rules-actions">
+              <button class="quiet-button" type="button" data-prev-step="environment">← VOLVER A CIRCUITO</button>
+              <span>CONFIGURA TU PARRILLA Y ENTRA EN PISTA</span>
+            </div>
+          </section>
         </div>
       </section>
 

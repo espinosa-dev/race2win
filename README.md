@@ -32,7 +32,8 @@ La primera persona que entra crea la sala, elige el circuito, el aforo (hasta oc
 ## Funciones actuales
 
 - Cuatro circuitos 3D: Monaco, Monza, Tokyo Night y Sahara Rally. Sus rutas Catmull-Rom se generan en servidor y cliente desde una geometría compartida.
-- Asfalto, pianos temáticos, escapatorias, barreras exteriores, zonas DRS y minimapa en directo.
+- Bordes de pista y escapatorias sin estrangulamientos ni cruces, con colisión alineada a las barreras visibles.
+- Selector de clima y hora: soleado, atardecer, noche con faros y lluvia con asfalto húmedo y menor agarre.
 - Carreras LAN de hasta ocho participantes, parrilla con bots configurables, dificultad de IA y estado «Listo».
 - Contrarreloj individual con récords por circuito y fantasma persistente.
 - Físicas arcade con marcha atrás, derrape controlable, escapatorias transitables y colisiones entre coches en carreras.
@@ -42,7 +43,7 @@ La primera persona que entra crea la sala, elige el circuito, el aforo (hasta oc
 - Detección de vuelta y meta al cruzar la línea en el sentido correcto.
 - Cuentas locales con contraseñas derivadas mediante scrypt, sesiones aleatorias persistentes, 500 RC iniciales y datos en `data/accounts.json` y `data/sessions.json`.
 - Tienda e inventario validados por el servidor, con puntos, RaceCoins y logros.
-- Paddock con escaparate 3D del coche, selección visual de circuitos, estadísticas del piloto y clasificación global Top 10.
+- Paddock por pasos con selector amplio de circuito/clima, escaparate 3D, configuración de carrera, estadísticas y Top 10 global.
 - Catálogo compartido en `public/catalog.json` y cosméticos visibles en coches de jugadores y bots.
 - Récords y trazas de fantasma en `data/records.json`; las cuentas, sesiones y récords locales están excluidos de Git.
 - Escena Three.js temática con sombras, parrilla, meta, decoración y coches personalizables.
