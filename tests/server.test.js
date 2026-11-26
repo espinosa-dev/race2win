@@ -246,10 +246,13 @@ test("lets a driver reverse by holding the brake from a stop", { timeout: 7000 }
   const client = createClient(baseUrl, { transports: ["websocket"], reconnection: false });
   try {
     await connect(client);
+    const initialState = waitForRaceState(client, (state) => state.cars.length === 1);
     const joined = await new Promise((resolve) => {
       client.emit("joinRace", { name: "Reversa", maxPlayers: 1, botsEnabled: false, trackId: "monaco" }, resolve);
     });
     assert.equal(joined.ok, true);
+    const initial = await initialState;
+    const initialCar = initial.cars.find((car) => car.id === joined.id);
 
     const racingState = waitForRaceState(client, (state) => state.phase === "racing", 5000);
     client.emit("startRace");
@@ -257,11 +260,14 @@ test("lets a driver reverse by holding the brake from a stop", { timeout: 7000 }
 
     const reversingState = waitForRaceState(client, (state) => {
       const driver = state.cars.find((car) => car.id === joined.id);
-      return driver?.speed < -0.5;
+      return driver?.speed < -0.5
+        && Math.hypot(driver.x - initialCar.x, driver.z - initialCar.z) > 0.1;
     }, 2000);
     client.emit("driverInput", { throttle: 0, brake: 1, steer: 0 });
     const reversing = await reversingState;
-    assert.ok(reversing.cars.find((car) => car.id === joined.id).speed < 0);
+    const reversingCar = reversing.cars.find((car) => car.id === joined.id);
+    assert.ok(reversingCar.speed < 0);
+    assert.ok(Math.hypot(reversingCar.x - initialCar.x, reversingCar.z - initialCar.z) > 0.1);
   } finally {
     client.disconnect();
   }

@@ -380,7 +380,7 @@ function createGameServer() {
       STEERING_RESPONSE * dt
     );
 
-    if (car.speed > 0.1) {
+    if (Math.abs(car.speed) > 0.1) {
       car.yaw = wrapAngle(car.yaw - (car.speed / STEERING_RADIUS) * car.steering * dt);
       car.x -= Math.sin(car.yaw) * car.speed * dt;
       car.z -= Math.cos(car.yaw) * car.speed * dt;
