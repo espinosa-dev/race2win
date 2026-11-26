@@ -199,6 +199,14 @@ test("calculates competitive rewards with completion and fastest-lap bonuses", (
   assert.equal(second.coins, 85);
   assert.equal(second.completedBonus, false);
   assert.equal(second.fastestLapBonus, false);
+
+  const oneOnOne = calculateRaceRewards({
+    place: 1,
+    entrantCount: 2,
+    lapsCompleted: 0,
+  });
+  assert.equal(oneOnOne.basePoints, 60);
+  assert.equal(oneOnOne.baseCoins, 72);
 });
 
 test("settles a race only once even if completion is requested repeatedly", () => {
@@ -393,6 +401,68 @@ test("registers and logs in with hashed passwords and persistent profiles", asyn
   assert.equal(logout.response.status, 204);
   const loggedOut = await requestJson("/api/me", { token: login.data.token });
   assert.equal(loggedOut.response.status, 401);
+});
+
+test("keeps an active login session valid after the server restarts", async () => {
+  const account = await createTestAccount("SessionPilot");
+  const sessionsPath = path.join(dataDir, "sessions.json");
+  const storedSessions = JSON.parse(fs.readFileSync(sessionsPath, "utf8"));
+  assert.equal(JSON.stringify(storedSessions).includes(account.token), false);
+  const expiredDigest = "e".repeat(64);
+  storedSessions.push([expiredDigest, {
+    username: "SessionPilot",
+    expiresAt: Date.now() - 1,
+  }]);
+  fs.writeFileSync(sessionsPath, JSON.stringify(storedSessions));
+
+  await game.close();
+  game = createGameServer({ dataDir });
+  await new Promise((resolve) => game.httpServer.listen(0, "127.0.0.1", resolve));
+  baseUrl = `http://127.0.0.1:${game.httpServer.address().port}`;
+
+  const profile = await requestJson("/api/me", { token: account.token });
+  assert.equal(profile.response.status, 200);
+  assert.equal(profile.data.username, "SessionPilot");
+  assert.equal(fs.readFileSync(sessionsPath, "utf8").includes(expiredDigest), false);
+});
+
+test("returns a public top-ten leaderboard ordered by points and wins", async () => {
+  await game.close();
+  const accounts = Array.from({ length: 12 }, (_, index) => ({
+    username: `Driver${String(index).padStart(2, "0")}`,
+    salt: "test-salt",
+    passwordHash: "private-hash",
+    coins: 500,
+    inventory: [],
+    equipped: {},
+    stats: {
+      racesPlayed: index + 1,
+      wins: index === 0 ? 1 : index === 1 ? 2 : 0,
+      podiums: index,
+      bestLapMs: index ? 90000 + index : null,
+      points: index < 2 ? 1000 : 1000 - index * 10,
+    },
+  }));
+  fs.writeFileSync(path.join(dataDir, "accounts.json"), JSON.stringify(accounts));
+  game = createGameServer({ dataDir });
+  await new Promise((resolve) => game.httpServer.listen(0, "127.0.0.1", resolve));
+  baseUrl = `http://127.0.0.1:${game.httpServer.address().port}`;
+
+  const response = await requestJson("/api/leaderboard");
+  assert.equal(response.response.status, 200);
+  assert.equal(response.data.length, 10);
+  assert.equal(response.data[0].username, "Driver01");
+  assert.equal(response.data[1].username, "Driver00");
+  assert.deepEqual(Object.keys(response.data[0]).sort(), [
+    "bestLapMs",
+    "podiums",
+    "points",
+    "racesPlayed",
+    "username",
+    "wins",
+  ]);
+  assert.equal(JSON.stringify(response.data).includes("passwordHash"), false);
+  assert.equal(JSON.stringify(response.data).includes("private-hash"), false);
 });
 
 test("validates shop prices, purchases, and equipped inventory on the server", async () => {

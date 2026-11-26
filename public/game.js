@@ -44,6 +44,7 @@ let socket;
 let playerId = null;
 let latestState = null;
 let catalogData = null;
+let trackData = null;
 let accountProfile = null;
 let sessionToken = localStorage.getItem("race2win.sessionToken") || "";
 let selectedCategory = "color";
@@ -169,6 +170,58 @@ function getTrackDistance(track, x, z) {
   return minimum;
 }
 
+function drawTrackCards(tracks) {
+  trackData = tracks;
+  for (const card of document.querySelectorAll(".track-card")) {
+    const track = tracks[card.dataset.trackId];
+    if (!track) continue;
+    const svg = card.querySelector(".track-silhouette");
+    const [minX, maxX] = [
+      Math.min(...track.points.map((point) => point[0])),
+      Math.max(...track.points.map((point) => point[0])),
+    ];
+    const [minZ, maxZ] = [
+      Math.min(...track.points.map((point) => point[1])),
+      Math.max(...track.points.map((point) => point[1])),
+    ];
+    const padding = 8;
+    const scale = Math.min(
+      (140 - padding * 2) / Math.max(1, maxX - minX),
+      (70 - padding * 2) / Math.max(1, maxZ - minZ)
+    );
+    const offsetX = (140 - (maxX - minX) * scale) / 2;
+    const offsetY = (70 - (maxZ - minZ) * scale) / 2;
+    const route = track.points.map(([x, z], index) => (
+      `${index === 0 ? "M" : "L"}${(offsetX + (x - minX) * scale).toFixed(1)},${(70 - offsetY - (z - minZ) * scale).toFixed(1)}`
+    )).join(" ") + " Z";
+    for (const className of ["track-outline", "track-route"]) {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("class", className);
+      path.setAttribute("d", route);
+      svg.appendChild(path);
+    }
+    card.querySelector(".track-card-meta b").textContent = "3 VUELTAS";
+    card.querySelector(".track-card-meta span").textContent = `${track.style.toUpperCase()} · ${track.width.toFixed(1)} m`;
+    card.setAttribute(
+      "aria-label",
+      `${track.name}, circuito ${track.style.toLowerCase()}, ${track.width.toFixed(1)} metros de ancho, tres vueltas`
+    );
+  }
+  selectTrack(document.querySelector("#track-select").value);
+}
+
+function selectTrack(trackId) {
+  const track = trackData?.[trackId];
+  if (!track) return;
+  document.querySelector("#track-select").value = trackId;
+  document.querySelectorAll(".track-card").forEach((card) => {
+    const selected = card.dataset.trackId === trackId;
+    card.classList.toggle("is-selected", selected);
+    card.setAttribute("aria-pressed", String(selected));
+  });
+  document.querySelector("#track-selection-status").textContent = `${track.name.toUpperCase()} · ${track.style.toUpperCase()}`;
+}
+
 function addCircuitDecoration(track) {
   const limits = track.bounds;
   const buildingsData = [];
@@ -281,18 +334,33 @@ function addCircuitDecoration(track) {
     const normalZ = -dx / length;
     const side = index % 2 === 0 ? 1 : -1;
     const stand = new THREE.Group();
+    stand.position.set((point[0] + next[0]) / 2, 0, (point[1] + next[1]) / 2);
+    stand.rotation.y = Math.atan2(-dz, dx);
+    let hasSeats = false;
     for (let row = 0; row < 3; row += 1) {
+      const offset = track.width / 2 + 3 + row * 0.75;
+      const candidateX = stand.position.x + normalX * side * offset;
+      const candidateZ = stand.position.z + normalZ * side * offset;
+      const halfLength = Math.min(length * 0.8, 8) / 2;
+      const tangentX = dx / length;
+      const tangentZ = dz / length;
+      const clearOfTrack = [-1, 0, 1].every((sample) => (
+        getTrackDistance(
+          track,
+          candidateX + tangentX * halfLength * sample,
+          candidateZ + tangentZ * halfLength * sample
+        ) >= track.width / 2 + 1.1
+      ));
+      if (!clearOfTrack) continue;
       const seats = new THREE.Mesh(
         new THREE.BoxGeometry(Math.min(length * 0.8, 8), 0.42, 1.15),
         new THREE.MeshStandardMaterial({ color: row % 2 ? "#d96d62" : "#e8d9ae", flatShading: true })
       );
-      seats.position.set(
-        (point[0] + next[0]) / 2 + normalX * side * (track.width / 2 + 3 + row * 0.75),
-        0.55 + row * 0.42,
-        (point[1] + next[1]) / 2 + normalZ * side * (track.width / 2 + 3 + row * 0.75)
-      );
+      seats.position.set(-side * offset, 0.55 + row * 0.42, 0);
       stand.add(seats);
+      hasSeats = true;
     }
+    if (!hasSeats) continue;
     stand.traverse((object) => {
       if (object.isMesh) object.castShadow = true;
     });
@@ -502,7 +570,7 @@ function createTrack(track) {
   const gridPosition = new THREE.Vector3();
   const gridRotation = new THREE.Quaternion().setFromAxisAngle(
     new THREE.Vector3(0, 1, 0),
-    Math.atan2(-tangentZ, tangentX)
+    Math.atan2(-tangentX, -tangentZ)
   );
   const gridScale = new THREE.Vector3(1, 1, 1);
   for (let index = 0; index < 8; index += 1) {
@@ -540,8 +608,8 @@ function createTrack(track) {
     new THREE.BoxGeometry(track.width * 0.58, 0.44, 0.12),
     new THREE.MeshStandardMaterial({ color: "#17383a", emissive: "#0f4640", roughness: 0.4 })
   );
-  finishSign.position.set(start[0], 3.68, start[1] - tangentZ / tangentLength * 0.45);
-  finishSign.rotation.y = Math.atan2(-tangentZ, tangentX);
+  finishSign.position.set(start[0], 3.65, start[1] - tangentZ / tangentLength * 0.45);
+  finishSign.rotation.y = beam.rotation.y;
   finishGate.add(finishSign);
   scene.add(finishGate);
 }
@@ -698,11 +766,14 @@ function createCar(color, cosmetics = {}) {
   for (const x of [-1.03, 1.03]) {
     for (const z of [-1.19, 1.2]) {
       const wheel = new THREE.Group();
-      wheel.position.set(x, 0.4, z);
       const radius = wheelStyle?.style === "offroad" ? 0.41 : 0.37;
-      const tire = addPart(new THREE.CylinderGeometry(radius, radius, 0.3, wheelStyle?.style === "offroad" ? 10 : 14), tireMaterial, [0, 0, 0], [0, 0, Math.PI / 2]);
-      wheel.remove(tire);
-      car.remove(tire);
+      wheel.userData.radius = radius;
+      const tire = new THREE.Mesh(
+        new THREE.CylinderGeometry(radius, radius, 0.3, wheelStyle?.style === "offroad" ? 10 : 14),
+        tireMaterial
+      );
+      tire.rotation.z = Math.PI / 2;
+      tire.castShadow = true;
       wheel.add(tire);
       const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.23, 0.315, 12), rimMaterial);
       rim.rotation.z = Math.PI / 2;
@@ -718,9 +789,17 @@ function createCar(color, cosmetics = {}) {
         spokeMesh.rotation.x = angle;
         wheel.add(spokeMesh);
       }
-      car.add(wheel);
+      if (z < 0) {
+        const steeringPivot = new THREE.Group();
+        steeringPivot.position.set(x, 0.4, z);
+        steeringPivot.add(wheel);
+        car.add(steeringPivot);
+        frontWheelGroups.push(steeringPivot);
+      } else {
+        wheel.position.set(x, 0.4, z);
+        car.add(wheel);
+      }
       wheelGroups.push(wheel);
-      if (z < 0) frontWheelGroups.push(wheel);
     }
   }
 
@@ -757,6 +836,7 @@ function createCar(color, cosmetics = {}) {
   car.userData.frontWheelGroups = frontWheelGroups;
   car.userData.trailGroup = trailGroup;
   car.userData.trailStyle = trailStyle?.style || "none";
+  car.userData.brakeLightMaterial = lightRear;
   car.userData.cosmeticSignature = cosmeticSignature(cosmetics);
   car.traverse((object) => {
     if (object.isMesh) {
@@ -834,6 +914,27 @@ function initializePreview(containerId) {
   floor.position.y = -0.08;
   floor.receiveShadow = true;
   previewScene.add(floor);
+  const platform = new THREE.Mesh(
+    new THREE.CylinderGeometry(3.05, 3.25, 0.14, 48),
+    new THREE.MeshStandardMaterial({ color: "#193b3c", metalness: 0.35, roughness: 0.52, emissive: "#092524" })
+  );
+  platform.position.y = -0.015;
+  platform.receiveShadow = true;
+  platform.castShadow = true;
+  previewScene.add(platform);
+  const platformRing = new THREE.Mesh(
+    new THREE.RingGeometry(2.55, 2.68, 64),
+    new THREE.MeshBasicMaterial({ color: "#30d6c1", side: THREE.DoubleSide })
+  );
+  platformRing.rotation.x = -Math.PI / 2;
+  platformRing.position.y = 0.06;
+  previewScene.add(platformRing);
+  const rimLight = new THREE.PointLight("#30d6c1", 22, 8);
+  rimLight.position.set(-2.8, 1.2, -1.6);
+  previewScene.add(rimLight);
+  const warmLight = new THREE.PointLight("#ffb94b", 12, 7);
+  warmLight.position.set(3.2, 0.8, 2.1);
+  previewScene.add(warmLight);
   const previewCamera = new THREE.PerspectiveCamera(39, 1, 0.1, 50);
   previewCamera.position.set(5.1, 3.5, 6.4);
   previewCamera.lookAt(0, 0.75, 0);
@@ -909,11 +1010,12 @@ function renderFrame() {
     const yawDifference = shortestAngle(carView.mesh.rotation.y, carView.targetYaw);
     carView.mesh.rotation.y += yawDifference * Math.min(1, dt * 8);
     for (const wheel of carView.mesh.userData.wheelGroups || []) {
-      wheel.rotation.x += carView.speed * dt / 0.37;
+      wheel.rotation.x -= carView.speed * dt / (wheel.userData.radius || 0.37);
     }
-    for (const wheel of carView.mesh.userData.frontWheelGroups || []) {
-      wheel.rotation.y = -carView.steering * 0.32;
+    for (const steeringPivot of carView.mesh.userData.frontWheelGroups || []) {
+      steeringPivot.rotation.y = -carView.steering * 0.32;
     }
+    carView.mesh.userData.brakeLightMaterial.emissiveIntensity = carView.braking ? 3.6 : 1.1;
     const trail = carView.mesh.userData.trailGroup;
     if (trail) {
       trail.visible = carView.accelerating && carView.mesh.userData.trailStyle !== "none";
@@ -929,7 +1031,14 @@ function renderFrame() {
   for (const preview of previewViews.values()) {
     if (!preview.container.getClientRects().length) continue;
     if (!preview.dragging) preview.car.rotation.y += dt * 0.42;
-    for (const wheel of preview.car.userData.wheelGroups || []) wheel.rotation.x += dt * 0.8;
+    for (const wheel of preview.car.userData.wheelGroups || []) wheel.rotation.x -= dt * 0.8;
+    const previewTrail = preview.car.userData.trailGroup;
+    if (previewTrail?.visible) {
+      previewTrail.children.forEach((particle, index) => {
+        particle.position.z = 2.08 + index * 0.34 + (performance.now() / 380 + index * 0.45) % 0.45;
+        particle.scale.setScalar(0.85 + ((performance.now() / 250 + index) % 3) * 0.22);
+      });
+    }
     preview.renderer.render(preview.scene, preview.camera);
   }
 
@@ -1062,6 +1171,124 @@ function formatRaceTime(milliseconds) {
   return `${minutes}:${String(seconds).padStart(2, "0")}.${String(remainder).padStart(2, "0")}`;
 }
 
+function updatePilotPanel() {
+  const profile = accountProfile;
+  const driverName = document.querySelector("#driver-name");
+  if (profile) {
+    driverName.value = profile.username;
+    driverName.readOnly = true;
+  } else {
+    driverName.readOnly = false;
+  }
+  const displayName = profile?.username || driverName.value.trim() || "Piloto";
+  document.querySelector("#pilot-display-name").textContent = displayName;
+  document.querySelector("#pilot-initial").textContent = displayName.charAt(0).toUpperCase();
+  document.querySelector("#pilot-account-status").textContent = profile ? "CUENTA ACTIVA" : "INVITADO";
+  document.querySelector("#showroom-status").textContent = profile ? "LOADOUT PERSONALIZADO" : "CONFIGURACIÓN BASE";
+  const stats = profile?.stats;
+  document.querySelector("#pilot-points").textContent = stats ? String(stats.points) : "—";
+  document.querySelector("#pilot-races").textContent = stats ? String(stats.racesPlayed) : "—";
+  document.querySelector("#pilot-wins").textContent = stats ? String(stats.wins) : "—";
+  document.querySelector("#pilot-podiums").textContent = stats ? String(stats.podiums) : "—";
+  document.querySelector("#pilot-best-lap").textContent = Number.isFinite(stats?.bestLapMs)
+    ? formatRaceTime(stats.bestLapMs)
+    : "—";
+}
+
+function renderLoadoutSummary(cosmetics) {
+  const summary = document.querySelector("#loadout-summary");
+  summary.replaceChildren();
+  for (const category of cosmeticCategories) {
+    const item = getCatalogItem(cosmetics[category]);
+    const chip = document.createElement("span");
+    chip.className = "loadout-chip";
+    chip.textContent = item?.name || categoryLabels[category];
+    summary.appendChild(chip);
+  }
+}
+
+async function refreshGlobalLeaderboard() {
+  const list = document.querySelector("#global-leaderboard");
+  try {
+    const response = await fetch("/api/leaderboard");
+    if (!response.ok) throw new Error("No se pudo cargar la clasificación global.");
+    const drivers = await response.json();
+    list.replaceChildren();
+    if (!drivers.length) {
+      const empty = document.createElement("li");
+      empty.className = "rank-empty";
+      empty.textContent = "Aún no hay pilotos clasificados.";
+      list.appendChild(empty);
+      return;
+    }
+    drivers.forEach((driver, index) => {
+      const row = document.createElement("li");
+      const rank = document.createElement("span");
+      rank.className = "global-rank";
+      rank.textContent = String(index + 1).padStart(2, "0");
+      const name = document.createElement("span");
+      name.className = "global-name";
+      name.textContent = driver.username;
+      const points = document.createElement("span");
+      points.className = "global-points";
+      points.textContent = `${driver.points} PTS`;
+      const wins = document.createElement("span");
+      wins.className = "global-wins";
+      wins.textContent = `${driver.wins}V`;
+      row.append(rank, name, points, wins);
+      list.appendChild(row);
+    });
+  } catch (error) {
+    list.replaceChildren();
+    const failure = document.createElement("li");
+    failure.className = "rank-empty";
+    failure.textContent = error.message;
+    list.appendChild(failure);
+    console.warn("No se pudo actualizar la clasificación global.", error);
+  }
+}
+
+async function initializeLanInvite() {
+  const link = document.querySelector("#lan-url");
+  const status = document.querySelector("#lan-copy-status");
+  try {
+    const response = await fetch("/api/info");
+    if (!response.ok) throw new Error("No se pudo consultar la dirección LAN.");
+    const info = await response.json();
+    const address = info.lanUrls?.[0] || window.location.origin;
+    link.href = address;
+    link.textContent = address;
+  } catch (error) {
+    status.textContent = error.message;
+    console.warn("No se pudo consultar la dirección de la red local.", error);
+  }
+}
+
+async function copyLanAddress() {
+  const link = document.querySelector("#lan-url");
+  const status = document.querySelector("#lan-copy-status");
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(link.href);
+    } else {
+      const input = document.createElement("textarea");
+      input.value = link.href;
+      input.setAttribute("readonly", "");
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+      input.select();
+      const copied = document.execCommand("copy");
+      input.remove();
+      if (!copied) throw new Error("El navegador no permitió copiar el enlace.");
+    }
+    status.textContent = "ENLACE COPIADO";
+  } catch (error) {
+    status.textContent = "No se pudo copiar. Selecciona la dirección para compartirla.";
+    console.warn("No se pudo copiar el enlace LAN.", error);
+  }
+}
+
 function updateRaceClock(now) {
   if (now - lastClockUpdateAt < 50) return;
   const elapsed = raceElapsedMs + (raceClockRunning ? now - raceClockSyncAt : 0);
@@ -1098,6 +1325,7 @@ function onRaceState(state) {
         speed: car.speed,
         steering: car.steering || 0,
         accelerating: car.accelerating === true,
+        braking: car.braking === true,
         cosmeticSignature: signature,
       };
       carViews.set(car.id, carView);
@@ -1107,6 +1335,7 @@ function onRaceState(state) {
     carView.speed = car.speed;
     carView.steering = car.steering || 0;
     carView.accelerating = car.accelerating === true;
+    carView.braking = car.braking === true;
     if (car.id === playerId) {
       document.querySelector("#speed-value").textContent = `${car.speed < -0.1 ? "R" : ""}${String(Math.round(Math.abs(car.speed) * 5.3)).padStart(2, "0")}`;
       document.querySelector("#lap-number").textContent = String(car.lap);
@@ -1131,6 +1360,7 @@ function onRaceState(state) {
     lastLeaderboardUpdate = now;
   }
   lastRenderedPhase = state.phase;
+  if (state.phase === "finished" && previousPhase !== "finished") refreshGlobalLeaderboard();
   const isHost = state.hostId === playerId;
   if (state.phase !== "finished") rewardSummary.classList.add("is-hidden");
   startButton.classList.toggle("is-hidden", !(isHost && state.phase === "lobby"));
@@ -1200,6 +1430,7 @@ function updateAccountUi() {
   accountActions.classList.toggle("is-hidden", Boolean(accountProfile));
   logoutButton.classList.toggle("is-hidden", !accountProfile);
   if (accountProfile) accountUsername.value = accountProfile.username;
+  updatePilotPanel();
 }
 
 async function requestApi(url, { method = "GET", body, authenticated = true } = {}) {
@@ -1225,6 +1456,13 @@ function refreshCatalogViews() {
   if (!catalogData) return;
   renderCatalogPanel("store");
   renderCatalogPanel("garage");
+  const menuCosmetics = getEquippedCosmetics();
+  setPreviewAppearance(
+    "menu-preview",
+    menuCosmetics,
+    accountProfile ? `${accountProfile.username} · EQUIPADO` : "CONFIGURACIÓN BASE"
+  );
+  renderLoadoutSummary(menuCosmetics);
   const storeItem = catalogData.items.find((item) => item.id === selectedStoreItemId);
   const storeCosmetics = storeItem
     ? { ...getEquippedCosmetics(), [storeItem.category]: storeItem.id }
@@ -1298,13 +1536,16 @@ function renderCatalogPanel(mode) {
     title.textContent = item.name;
     const detail = document.createElement("small");
     const equipped = accountProfile?.equipped?.[item.category] === item.id;
-    detail.textContent = equipped ? "Equipado" : item.price === 0 ? "Artículo base" : `${item.price} RaceCoins`;
+    detail.textContent = equipped
+      ? "Equipado"
+      : owned.has(item.id) ? "Desbloqueado" : item.price === 0 ? "Artículo base" : `${item.price} RaceCoins`;
     description.append(title, detail);
     const action = document.createElement("button");
     action.type = "button";
     action.addEventListener("click", (event) => {
       event.stopPropagation();
-      if (isStore) buyCatalogItem(item);
+      if (isStore && !owned.has(item.id)) buyCatalogItem(item);
+      else if (isStore) equipCatalogItem(item, true);
       else equipCatalogItem(item);
     });
 
@@ -1313,8 +1554,7 @@ function renderCatalogPanel(mode) {
         action.textContent = "EQUIPADO";
         action.disabled = true;
       } else if (owned.has(item.id)) {
-        action.textContent = "COMPRADO";
-        action.disabled = true;
+        action.textContent = "EQUIPAR";
       } else if (!accountProfile) {
         action.textContent = "INICIA SESIÓN";
         action.disabled = true;
@@ -1343,8 +1583,8 @@ async function buyCatalogItem(item) {
   }
 }
 
-async function equipCatalogItem(item) {
-  const message = document.querySelector("#garage-message");
+async function equipCatalogItem(item, fromStore = false) {
+  const message = document.querySelector(fromStore ? "#store-message" : "#garage-message");
   message.textContent = "";
   try {
     accountProfile = await requestApi("/api/inventory/equip", {
@@ -1422,9 +1662,30 @@ function showMainScreen(screenId) {
 document.querySelectorAll(".nav-button").forEach((button) => {
   button.addEventListener("click", () => showMainScreen(button.dataset.screen));
 });
+document.querySelector(".garage-quick-link").addEventListener("click", () => showMainScreen("garage-screen"));
 document.querySelector("#login-button").addEventListener("click", () => authenticate("/api/login"));
 document.querySelector("#register-button").addEventListener("click", () => authenticate("/api/register"));
-accountForm.addEventListener("submit", (event) => event.preventDefault());
+accountForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!accountProfile) authenticate("/api/login");
+});
+document.querySelector("#driver-name").addEventListener("input", updatePilotPanel);
+document.querySelector("#copy-lan").addEventListener("click", copyLanAddress);
+document.querySelectorAll(".track-card").forEach((card) => {
+  card.addEventListener("click", () => selectTrack(card.dataset.trackId));
+});
+document.querySelectorAll(".participant-pill").forEach((button) => {
+  button.addEventListener("click", () => {
+    const count = Number(button.dataset.playerCount);
+    document.querySelector("#max-players").value = String(count);
+    document.querySelector("#participant-count").textContent = String(count);
+    document.querySelectorAll(".participant-pill").forEach((pill) => {
+      const selected = pill === button;
+      pill.classList.toggle("is-selected", selected);
+      pill.setAttribute("aria-pressed", String(selected));
+    });
+  });
+});
 logoutButton.addEventListener("click", async () => {
   try {
     await requestApi("/api/logout", { method: "POST", body: {} });
@@ -1476,12 +1737,6 @@ joinForm.addEventListener("submit", (event) => {
   socket.on("raceState", onRaceState);
 });
 
-document.querySelector("#track-select").addEventListener("change", (event) => {
-  const selected = event.currentTarget.selectedOptions[0];
-  document.querySelector("#track-note-name").textContent = selected.value.toUpperCase();
-  document.querySelector("#track-note-location").textContent = selected.textContent.split("·")[1].trim();
-});
-
 startButton.addEventListener("click", () => socket?.emit("startRace"));
 restartButton.addEventListener("click", () => socket?.emit("restartRace"));
 leaveButton.addEventListener("click", () => {
@@ -1520,11 +1775,18 @@ window.addEventListener("resize", resizeRenderer);
 
 async function initializeCatalog() {
   try {
-    const response = await fetch("/catalog.json");
-    if (!response.ok) throw new Error("No se pudo cargar el catálogo de cosméticos.");
-    catalogData = await response.json();
+    const [catalogResponse, tracksResponse] = await Promise.all([
+      fetch("/catalog.json"),
+      fetch("/tracks.json"),
+    ]);
+    if (!catalogResponse.ok) throw new Error("No se pudo cargar el catálogo de cosméticos.");
+    if (!tracksResponse.ok) throw new Error("No se pudieron cargar los circuitos.");
+    catalogData = await catalogResponse.json();
+    drawTrackCards(await tracksResponse.json());
+    initializePreview("menu-preview");
     refreshCatalogViews();
     await refreshAccountProfile();
+    await Promise.all([refreshGlobalLeaderboard(), initializeLanInvite()]);
   } catch (error) {
     accountError.textContent = error.message;
     console.error("No se pudo inicializar la tienda y el garaje.", error);
@@ -1533,13 +1795,3 @@ async function initializeCatalog() {
 
 updateAccountUi();
 initializeCatalog();
-
-fetch("/api/info")
-  .then((response) => response.json())
-  .then((info) => {
-    if (info.lanUrls?.length) {
-      const lanMessage = document.querySelector(".lan-note span:last-child");
-      lanMessage.textContent = `En la misma Wi-Fi, tus amigos pueden entrar en ${info.lanUrls[0]}.`;
-    }
-  })
-  .catch((error) => console.warn("No se pudo consultar la dirección de la red local.", error));

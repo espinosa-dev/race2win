@@ -9,6 +9,7 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 function createStorage(dataDir, catalog) {
   const accountsPath = path.join(dataDir, "accounts.json");
+  const sessionsPath = path.join(dataDir, "sessions.json");
   fs.mkdirSync(dataDir, { recursive: true });
   const accounts = new Map();
   const sessions = new Map();
@@ -19,11 +20,33 @@ function createStorage(dataDir, catalog) {
     }
   }
 
+  if (fs.existsSync(sessionsPath)) {
+    const storedSessions = JSON.parse(fs.readFileSync(sessionsPath, "utf8"));
+    for (const [digest, session] of storedSessions) {
+      if (
+        /^[a-f0-9]{64}$/.test(digest)
+        && Number.isFinite(session?.expiresAt)
+        && session.expiresAt > Date.now()
+        && accounts.has(String(session.username || "").toLowerCase())
+      ) {
+        sessions.set(digest, session);
+      }
+    }
+  }
+
   function persist() {
     const temporaryPath = `${accountsPath}.${crypto.randomBytes(6).toString("hex")}.tmp`;
     fs.writeFileSync(temporaryPath, JSON.stringify([...accounts.values()], null, 2), { mode: 0o600 });
     fs.renameSync(temporaryPath, accountsPath);
   }
+
+  function persistSessions() {
+    const temporaryPath = `${sessionsPath}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+    fs.writeFileSync(temporaryPath, JSON.stringify([...sessions.entries()], null, 2), { mode: 0o600 });
+    fs.renameSync(temporaryPath, sessionsPath);
+  }
+
+  persistSessions();
 
   function publicProfile(account) {
     if (!account) return null;
@@ -48,6 +71,7 @@ function createStorage(dataDir, catalog) {
     if (!session) return null;
     if (session.expiresAt <= Date.now()) {
       sessions.delete(digest);
+      persistSessions();
       return null;
     }
     return accounts.get(session.username.toLowerCase()) || null;
@@ -60,6 +84,7 @@ function createStorage(dataDir, catalog) {
       username: account.username,
       expiresAt: Date.now() + SESSION_TTL_MS,
     });
+    persistSessions();
     return token;
   }
 
@@ -122,7 +147,25 @@ function createStorage(dataDir, catalog) {
 
   function logout(token) {
     const digest = tokenDigest(token);
-    if (digest) sessions.delete(digest);
+    if (digest && sessions.delete(digest)) persistSessions();
+  }
+
+  function leaderboard() {
+    return [...accounts.values()]
+      .sort((first, second) => (
+        second.stats.points - first.stats.points
+        || second.stats.wins - first.stats.wins
+        || first.username.localeCompare(second.username)
+      ))
+      .slice(0, 10)
+      .map((account) => ({
+        username: account.username,
+        points: account.stats.points,
+        wins: account.stats.wins,
+        podiums: account.stats.podiums,
+        racesPlayed: account.stats.racesPlayed,
+        bestLapMs: account.stats.bestLapMs,
+      }));
   }
 
   function buyItem(username, item) {
@@ -166,6 +209,7 @@ function createStorage(dataDir, catalog) {
     login,
     logout,
     getSession,
+    leaderboard,
     publicProfile,
     buyItem,
     equipItem,

@@ -34,8 +34,9 @@ La primera persona que entra crea la sala, elige el circuito, el aforo (hasta oc
 - Vallado alrededor del circuito y colisiones entre coches.
 - Posiciones en directo, cronómetro, tiempos de llegada y diferencias.
 - Detección de vuelta y meta al cruzar la línea en el sentido correcto.
-- Cuentas locales con contraseñas derivadas mediante scrypt, sesiones aleatorias, 500 RC iniciales y persistencia en `data/accounts.json`.
+- Cuentas locales con contraseñas derivadas mediante scrypt, sesiones aleatorias persistentes, 500 RC iniciales y datos en `data/accounts.json` y `data/sessions.json`.
 - Tienda e inventario validados por el servidor, con puntos y RC por carrera.
+- Paddock con escaparate 3D del coche, selección visual de circuitos, estadísticas del piloto y clasificación global Top 10.
 - Catálogo compartido en `public/catalog.json` y cosméticos visibles en coches de jugadores y bots.
 - Escena Three.js con sombras, pianos, parrilla, meta, decoración de circuito y coches personalizables.
 

@@ -230,7 +230,7 @@ function calculateRaceRewards({
   fastestLapMs = null,
 }) {
   const rivals = Math.max(0, entrantCount - 1);
-  const multiplier = Math.min(1, rivals / 3);
+  const multiplier = rivals === 0 ? 0 : Math.min(1, 0.6 + (rivals - 1) * 0.2);
   const positionIndex = clamp(place - 1, 0, BASE_RACE_POINTS.length - 1);
   const basePoints = Math.floor(BASE_RACE_POINTS[positionIndex] * multiplier);
   const baseCoins = Math.floor(BASE_RACE_COINS[positionIndex] * multiplier);
@@ -296,6 +296,9 @@ function createGameServer(options = {}) {
     });
   });
   app.get("/healthz", (req, res) => res.json({ ok: true }));
+  app.get("/api/leaderboard", (req, res) => {
+    res.json(storage.leaderboard());
+  });
 
   function getBearerToken(req) {
     const [scheme, token] = String(req.get("authorization") || "").split(" ");
@@ -551,6 +554,7 @@ function createGameServer(options = {}) {
         speed: car.speed,
         steering: car.steering,
         accelerating: car.input.throttle > 0,
+        braking: car.input.brake > 0 || car.speed < -0.1,
         lap: Math.min(TOTAL_LAPS, car.lapsCompleted + 1),
         progress: car.progress,
         finished: car.finishedAt !== null,
