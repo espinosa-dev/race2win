@@ -3,7 +3,7 @@
     "id": "monaco",
     "name": "Monaco",
     "location": "Circuit de Monaco · Montecarlo",
-    "width": 6.5,
+    "width": 11.5,
     "bounds": 65,
     "startIndex": 0,
     "points": [
@@ -22,7 +22,7 @@
     "id": "monza",
     "name": "Monza",
     "location": "Autodromo Nazionale Monza · Italia",
-    "width": 10,
+    "width": 14.5,
     "bounds": 65,
     "startIndex": 2,
     "points": [

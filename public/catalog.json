@@ -1,0 +1,40 @@
+{
+  "defaults": {
+    "color": "color-teal",
+    "camo": "camo-none",
+    "wheels": "wheel-standard",
+    "helmet": "helmet-teal",
+    "spoiler": "spoiler-standard",
+    "trail": "trail-none"
+  },
+  "items": [
+    { "id": "color-teal", "category": "color", "name": "Turquesa Race2Win", "price": 0, "free": true, "color": "#30d6c1", "finish": "metallic" },
+    { "id": "color-red", "category": "color", "name": "Rojo circuito", "price": 180, "color": "#f04d58", "finish": "metallic" },
+    { "id": "color-gold", "category": "color", "name": "Oro solar", "price": 260, "color": "#e9aa32", "finish": "metallic" },
+    { "id": "color-violet", "category": "color", "name": "Violeta eléctrico", "price": 320, "color": "#8967f4", "finish": "metallic" },
+    { "id": "color-white", "category": "color", "name": "Blanco competición", "price": 140, "color": "#f1f0e5", "finish": "solid" },
+    { "id": "camo-none", "category": "camo", "name": "Liso", "price": 0, "free": true, "pattern": "none", "accent": "#f4f0dc" },
+    { "id": "camo-stripe", "category": "camo", "name": "Rayas racing", "price": 160, "pattern": "stripes", "accent": "#f4f0dc" },
+    { "id": "camo-tactical", "category": "camo", "name": "Camuflaje táctico", "price": 220, "pattern": "camo", "accent": "#345b43" },
+    { "id": "camo-carbon", "category": "camo", "name": "Fibra de carbono", "price": 250, "pattern": "carbon", "accent": "#91aaa7" },
+    { "id": "camo-cyber", "category": "camo", "name": "Neón cyber", "price": 310, "pattern": "neon", "accent": "#70ffdc" },
+    { "id": "camo-checker", "category": "camo", "name": "Ajedrezado", "price": 280, "pattern": "checker", "accent": "#f4f0dc" },
+    { "id": "wheel-standard", "category": "wheels", "name": "Llantas estándar", "price": 0, "free": true, "style": "standard", "color": "#c5d0ca" },
+    { "id": "wheel-sport", "category": "wheels", "name": "Multirradio", "price": 190, "style": "sport", "color": "#dce6dc" },
+    { "id": "wheel-gold", "category": "wheels", "name": "Radios dorados", "price": 240, "style": "gold", "color": "#edb73f" },
+    { "id": "wheel-offroad", "category": "wheels", "name": "Todo-terreno", "price": 210, "style": "offroad", "color": "#b2a68e" },
+    { "id": "wheel-neon", "category": "wheels", "name": "Neón", "price": 300, "style": "neon", "color": "#66ffe0" },
+    { "id": "helmet-teal", "category": "helmet", "name": "Casco turquesa", "price": 0, "free": true, "color": "#30d6c1", "visor": "#193d45" },
+    { "id": "helmet-red", "category": "helmet", "name": "Casco rojo", "price": 120, "color": "#f04d58", "visor": "#272d39" },
+    { "id": "helmet-gold", "category": "helmet", "name": "Casco dorado", "price": 180, "color": "#edb73f", "visor": "#263d41" },
+    { "id": "spoiler-standard", "category": "spoiler", "name": "Alerón estándar", "price": 0, "free": true, "style": "standard" },
+    { "id": "spoiler-gt", "category": "spoiler", "name": "GT ancho", "price": 210, "style": "gt" },
+    { "id": "spoiler-double", "category": "spoiler", "name": "Doble plano", "price": 280, "style": "double" },
+    { "id": "spoiler-low", "category": "spoiler", "name": "Deportivo bajo", "price": 160, "style": "low" },
+    { "id": "trail-none", "category": "trail", "name": "Escape normal", "price": 0, "free": true, "style": "none", "color": "#e7f2eb" },
+    { "id": "trail-smoke", "category": "trail", "name": "Humo turbo", "price": 150, "style": "smoke", "color": "#bcc8c5" },
+    { "id": "trail-blue", "category": "trail", "name": "Fuego azul", "price": 240, "style": "flame", "color": "#54c8ff" },
+    { "id": "trail-gold", "category": "trail", "name": "Chispas doradas", "price": 290, "style": "sparks", "color": "#ffca62" },
+    { "id": "trail-neon", "category": "trail", "name": "Estela neón", "price": 340, "style": "neon", "color": "#6dffe3" }
+  ]
+}

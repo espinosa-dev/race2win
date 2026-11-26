@@ -1,26 +1,55 @@
 import * as THREE from "/vendor/three.module.js";
+import "/track-geometry.js";
 
 const joinScreen = document.querySelector("#join-screen");
 const raceScreen = document.querySelector("#race-screen");
+const storeScreen = document.querySelector("#store-screen");
+const garageScreen = document.querySelector("#garage-screen");
 const joinForm = document.querySelector("#join-form");
 const joinError = document.querySelector("#join-error");
 const connectionLabel = document.querySelector("#connection-label");
+const accountForm = document.querySelector("#account-form");
+const accountUsername = document.querySelector("#account-username");
+const accountPassword = document.querySelector("#account-password");
+const accountSummary = document.querySelector("#account-summary");
+const accountBalance = document.querySelector("#account-balance");
+const accountError = document.querySelector("#account-error");
+const logoutButton = document.querySelector("#logout-button");
 const gameView = document.querySelector("#game-view");
+const minimap = document.querySelector("#race-minimap");
 const startButton = document.querySelector("#start-button");
 const restartButton = document.querySelector("#restart-button");
 const leaveButton = document.querySelector("#leave-button");
 const raceMessage = document.querySelector("#race-message");
 const standingsList = document.querySelector("#standings-list");
 const raceClock = document.querySelector("#race-clock");
-const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: "high-performance" });
+const rewardSummary = document.querySelector("#reward-summary");
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(54, 1, 0.1, 350);
 const clock = new THREE.Clock();
 const carViews = new Map();
+const previewViews = new Map();
 const heldKeys = new Set();
+const cosmeticCategories = ["color", "camo", "wheels", "helmet", "spoiler", "trail"];
+const categoryLabels = {
+  color: "Colores",
+  camo: "Diseños",
+  wheels: "Ruedas",
+  helmet: "Cascos",
+  spoiler: "Alerones",
+  trail: "Estelas",
+};
 let socket;
 let playerId = null;
 let latestState = null;
+let catalogData = null;
+let accountProfile = null;
+let sessionToken = localStorage.getItem("race2win.sessionToken") || "";
+let selectedCategory = "color";
+let selectedStoreItemId = null;
+let selectedGarageItemId = null;
+let rewardSignature = "";
 let sceneReady = false;
 let sceneTrackId = null;
 let renderLoopStarted = false;
@@ -33,8 +62,9 @@ let raceClockSyncAt = 0;
 let raceClockRunning = false;
 let lastClockUpdateAt = 0;
 
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
-renderer.shadowMap.enabled = false;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.18;
@@ -126,45 +156,6 @@ function makeTexture(baseColor, marks, seed, repeat = 1, surface = "asphalt") {
   return texture;
 }
 
-function getTrackEdges(track) {
-  return track.points.map((point, index) => {
-    const previous = track.points[(index - 1 + track.points.length) % track.points.length];
-    const next = track.points[(index + 1) % track.points.length];
-    const incomingX = point[0] - previous[0];
-    const incomingZ = point[1] - previous[1];
-    const outgoingX = next[0] - point[0];
-    const outgoingZ = next[1] - point[1];
-    const incomingLength = Math.hypot(incomingX, incomingZ) || 1;
-    const outgoingLength = Math.hypot(outgoingX, outgoingZ) || 1;
-    const incomingNormalX = incomingZ / incomingLength;
-    const incomingNormalZ = -incomingX / incomingLength;
-    const outgoingNormalX = outgoingZ / outgoingLength;
-    const outgoingNormalZ = -outgoingX / outgoingLength;
-    let miterX = incomingNormalX + outgoingNormalX;
-    let miterZ = incomingNormalZ + outgoingNormalZ;
-    const miterLength = Math.hypot(miterX, miterZ);
-    if (miterLength < 1e-6) {
-      miterX = outgoingNormalX;
-      miterZ = outgoingNormalZ;
-    } else {
-      miterX /= miterLength;
-      miterZ /= miterLength;
-    }
-    const halfWidth = track.width / 2;
-    const denominator = Math.max(
-      0.25,
-      Math.abs(miterX * outgoingNormalX + miterZ * outgoingNormalZ)
-    );
-    const offset = Math.min(halfWidth / denominator, halfWidth * 2.5);
-    const offsetX = miterX * offset;
-    const offsetZ = miterZ * offset;
-    return {
-      left: [point[0] + offsetX, point[1] + offsetZ],
-      right: [point[0] - offsetX, point[1] - offsetZ],
-    };
-  });
-}
-
 function getTrackDistance(track, x, z) {
   let minimum = Infinity;
   for (let index = 0; index < track.points.length; index += 1) {
@@ -178,13 +169,153 @@ function getTrackDistance(track, x, z) {
   return minimum;
 }
 
+function addCircuitDecoration(track) {
+  const limits = track.bounds;
+  const buildingsData = [];
+  const treeData = [];
+  for (let x = -limits + 8; x < limits; x += 13) {
+    for (let z = -limits + 8; z < limits; z += 13) {
+      if (getTrackDistance(track, x, z) < track.width / 2 + 17) continue;
+      const seed = Math.abs(Math.round(x * 13 + z * 7));
+      if (seed % 4 === 0) {
+        treeData.push({ x, z, height: 2.8 + (seed % 4) * 0.4 });
+      } else {
+        buildingsData.push({
+          x,
+          z,
+          width: 5 + seed % 3,
+          depth: 5 + Math.floor(seed / 3) % 3,
+          height: 3 + seed % 7,
+        });
+      }
+    }
+  }
+
+  if (buildingsData.length) {
+    const buildings = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({ color: "#d7c6a9", flatShading: true, roughness: 0.92 }),
+      buildingsData.length
+    );
+    const windows = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 0.08),
+      new THREE.MeshStandardMaterial({ color: "#79b9b1", emissive: "#274847", flatShading: true }),
+      buildingsData.length * 3
+    );
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    const scale = new THREE.Vector3();
+    const rotation = new THREE.Quaternion();
+    let windowIndex = 0;
+    buildingsData.forEach((building, index) => {
+      position.set(building.x, building.height / 2, building.z);
+      scale.set(building.width, building.height, building.depth);
+      matrix.compose(position, rotation, scale);
+      buildings.setMatrixAt(index, matrix);
+      buildings.setColorAt(index, new THREE.Color(["#d7c6a9", "#c5d0ca", "#d9b8a5", "#a9b8b2"][index % 4]));
+      for (let floor = 1; floor <= 3; floor += 1) {
+        position.set(
+          building.x + (floor - 2) * building.width * 0.24,
+          Math.min(building.height - 0.5, floor * building.height / 4),
+          building.z + building.depth / 2 + 0.045
+        );
+        scale.set(0.52, 0.5, 1);
+        matrix.compose(position, rotation, scale);
+        windows.setMatrixAt(windowIndex, matrix);
+        windows.setColorAt(windowIndex, new THREE.Color(floor % 2 ? "#96c8c0" : "#dfc788"));
+        windowIndex += 1;
+      }
+    });
+    buildings.instanceMatrix.needsUpdate = true;
+    if (buildings.instanceColor) buildings.instanceColor.needsUpdate = true;
+    windows.count = windowIndex;
+    windows.instanceMatrix.needsUpdate = true;
+    if (windows.instanceColor) windows.instanceColor.needsUpdate = true;
+    buildings.castShadow = true;
+    buildings.receiveShadow = true;
+    scene.add(buildings, windows);
+  }
+
+  if (treeData.length) {
+    const trunks = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.18, 0.28, 1, 6),
+      new THREE.MeshStandardMaterial({ color: "#70513a", flatShading: true }),
+      treeData.length
+    );
+    const crowns = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(1.05, 2.1, 6),
+      new THREE.MeshStandardMaterial({ color: "#356f50", flatShading: true }),
+      treeData.length
+    );
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    const rotation = new THREE.Quaternion();
+    const scale = new THREE.Vector3(1, 1, 1);
+    treeData.forEach((tree, index) => {
+      position.set(tree.x, tree.height * 0.18, tree.z);
+      scale.set(1, tree.height * 0.4, 1);
+      matrix.compose(position, rotation, scale);
+      trunks.setMatrixAt(index, matrix);
+      position.set(tree.x, tree.height * 0.68, tree.z);
+      scale.set(1, tree.height / 2.1, 1);
+      matrix.compose(position, rotation, scale);
+      crowns.setMatrixAt(index, matrix);
+      crowns.setColorAt(index, new THREE.Color(index % 2 ? "#397b55" : "#2f694d"));
+    });
+    trunks.instanceMatrix.needsUpdate = true;
+    crowns.instanceMatrix.needsUpdate = true;
+    if (crowns.instanceColor) crowns.instanceColor.needsUpdate = true;
+    trunks.castShadow = true;
+    crowns.castShadow = true;
+    scene.add(trunks, crowns);
+  }
+
+  const standIndices = [4, 16, 29, 41];
+  for (const index of standIndices) {
+    const point = track.points[index % track.points.length];
+    const next = track.points[(index + 1) % track.points.length];
+    const dx = next[0] - point[0];
+    const dz = next[1] - point[1];
+    const length = Math.hypot(dx, dz) || 1;
+    const normalX = dz / length;
+    const normalZ = -dx / length;
+    const side = index % 2 === 0 ? 1 : -1;
+    const stand = new THREE.Group();
+    for (let row = 0; row < 3; row += 1) {
+      const seats = new THREE.Mesh(
+        new THREE.BoxGeometry(Math.min(length * 0.8, 8), 0.42, 1.15),
+        new THREE.MeshStandardMaterial({ color: row % 2 ? "#d96d62" : "#e8d9ae", flatShading: true })
+      );
+      seats.position.set(
+        (point[0] + next[0]) / 2 + normalX * side * (track.width / 2 + 3 + row * 0.75),
+        0.55 + row * 0.42,
+        (point[1] + next[1]) / 2 + normalZ * side * (track.width / 2 + 3 + row * 0.75)
+      );
+      stand.add(seats);
+    }
+    stand.traverse((object) => {
+      if (object.isMesh) object.castShadow = true;
+    });
+    scene.add(stand);
+  }
+}
+
 function createTrack(track) {
   scene.background = new THREE.Color("#a8d7dc");
-  scene.fog = new THREE.Fog("#a8d7dc", 95, 190);
-  const ambient = new THREE.HemisphereLight("#e3f6e8", "#536e5c", 2.1);
+  scene.fog = new THREE.Fog("#a8d7dc", 145, 300);
+  const ambient = new THREE.HemisphereLight("#e3f6e8", "#536e5c", 1.55);
   scene.add(ambient);
-  const sun = new THREE.DirectionalLight("#fff5d5", 3.2);
+  const sun = new THREE.DirectionalLight("#fff5d5", 3.1);
   sun.position.set(-38, 57, -22);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  sun.shadow.camera.left = -110;
+  sun.shadow.camera.right = 110;
+  sun.shadow.camera.top = 110;
+  sun.shadow.camera.bottom = -110;
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 240;
+  sun.shadow.bias = -0.00015;
   scene.add(sun);
 
   const grassTexture = makeTexture("#72b982", ["#4fa676", "#97cb79", "#b2d27e", "#8dc988"], 28, 20, "grass");
@@ -192,9 +323,10 @@ function createTrack(track) {
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(mapSize, mapSize), new THREE.MeshStandardMaterial({ map: grassTexture, roughness: 1 }));
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.15;
+  ground.receiveShadow = true;
   scene.add(ground);
 
-  const edges = getTrackEdges(track);
+  const edges = globalThis.RaceTrackGeometry.getTrackEdges(track);
   const vertices = [];
   const uvs = [];
   const indices = [];
@@ -212,7 +344,58 @@ function createTrack(track) {
   roadGeometry.setIndex(indices);
   roadGeometry.computeVertexNormals();
   const road = new THREE.Mesh(roadGeometry, new THREE.MeshStandardMaterial({ map: asphalt, roughness: 0.95, side: THREE.DoubleSide }));
+  road.receiveShadow = true;
   scene.add(road);
+
+  const centerLinePoints = track.points.map((point) => new THREE.Vector3(point[0], 0.075, point[1]));
+  const centerLine = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([...centerLinePoints, centerLinePoints[0]]),
+    new THREE.LineDashedMaterial({ color: "#d6dfcd", dashSize: 1.5, gapSize: 1.7, transparent: true, opacity: 0.48 })
+  );
+  centerLine.computeLineDistances();
+  scene.add(centerLine);
+
+  const kerbs = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(1, 0.09, 0.72),
+    new THREE.MeshStandardMaterial({ color: "#f6efe0", roughness: 0.78 }),
+    track.points.length * 2
+  );
+  const kerbMatrix = new THREE.Matrix4();
+  const kerbPosition = new THREE.Vector3();
+  const kerbRotation = new THREE.Quaternion();
+  const kerbScale = new THREE.Vector3();
+  let kerbIndex = 0;
+  for (const side of ["left", "right"]) {
+    for (let index = 0; index < edges.length; index += 1) {
+      const edgePoint = edges[index][side];
+      const nextEdgePoint = edges[(index + 1) % edges.length][side];
+      const dx = nextEdgePoint[0] - edgePoint[0];
+      const dz = nextEdgePoint[1] - edgePoint[1];
+      const length = Math.hypot(dx, dz);
+      if (length < 0.1) continue;
+      const centerX = (track.points[index][0] + track.points[(index + 1) % track.points.length][0]) / 2;
+      const centerZ = (track.points[index][1] + track.points[(index + 1) % track.points.length][1]) / 2;
+      const inwardX = centerX - (edgePoint[0] + nextEdgePoint[0]) / 2;
+      const inwardZ = centerZ - (edgePoint[1] + nextEdgePoint[1]) / 2;
+      const inwardLength = Math.hypot(inwardX, inwardZ) || 1;
+      kerbPosition.set(
+        (edgePoint[0] + nextEdgePoint[0]) / 2 + inwardX / inwardLength * 0.32,
+        0.105,
+        (edgePoint[1] + nextEdgePoint[1]) / 2 + inwardZ / inwardLength * 0.32
+      );
+      kerbRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(-dz, dx));
+      kerbScale.set(length, 1, 1);
+      kerbMatrix.compose(kerbPosition, kerbRotation, kerbScale);
+      kerbs.setMatrixAt(kerbIndex, kerbMatrix);
+      kerbs.setColorAt(kerbIndex, new THREE.Color(index % 2 ? "#f5eee0" : "#df5f57"));
+      kerbIndex += 1;
+    }
+  }
+  kerbs.count = kerbIndex;
+  kerbs.instanceMatrix.needsUpdate = true;
+  if (kerbs.instanceColor) kerbs.instanceColor.needsUpdate = true;
+  kerbs.receiveShadow = true;
+  scene.add(kerbs);
 
   for (const [edgeName, color] of [["left", "#f7f0dc"], ["right", "#f7f0dc"]]) {
     const linePoints = edges.map((edge) => new THREE.Vector3(edge[edgeName][0], 0.1, edge[edgeName][1]));
@@ -221,6 +404,11 @@ function createTrack(track) {
   const barriers = new THREE.InstancedMesh(
     new THREE.BoxGeometry(1, 1, 0.5),
     new THREE.MeshStandardMaterial({ color: "#f5eee0", flatShading: true }),
+    track.points.length * 2
+  );
+  const barrierRails = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(1, 0.13, 0.64),
+    new THREE.MeshStandardMaterial({ color: "#e7eee2", metalness: 0.22, roughness: 0.55 }),
     track.points.length * 2
   );
   const barrierMatrix = new THREE.Matrix4();
@@ -242,13 +430,28 @@ function createTrack(track) {
       barrierMatrix.compose(barrierPosition, barrierRotation, barrierScale);
       barriers.setMatrixAt(barrierIndex, barrierMatrix);
       barriers.setColorAt(barrierIndex, new THREE.Color(barrierIndex % 2 ? "#f5eee0" : "#e87662"));
+      barrierPosition.y = 1.28;
+      barrierScale.y = 1;
+      barrierScale.z = 0.7;
+      barrierMatrix.compose(barrierPosition, barrierRotation, barrierScale);
+      barrierRails.setMatrixAt(barrierIndex, barrierMatrix);
+      barrierRails.setColorAt(barrierIndex, new THREE.Color(barrierIndex % 2 ? "#e7eee2" : "#f3ca69"));
+      barrierPosition.y = 0.62;
+      barrierScale.y = 1.24;
+      barrierScale.z = 1;
       barrierIndex += 1;
     }
   }
   barriers.count = barrierIndex;
   barriers.instanceMatrix.needsUpdate = true;
   if (barriers.instanceColor) barriers.instanceColor.needsUpdate = true;
-  scene.add(barriers);
+  barriers.castShadow = true;
+  barriers.receiveShadow = true;
+  barrierRails.count = barrierIndex;
+  barrierRails.instanceMatrix.needsUpdate = true;
+  if (barrierRails.instanceColor) barrierRails.instanceColor.needsUpdate = true;
+  barrierRails.castShadow = true;
+  scene.add(barriers, barrierRails);
 
   const limits = track.bounds;
   const wallMaterial = new THREE.MeshStandardMaterial({ color: "#e87662", flatShading: true });
@@ -258,8 +461,11 @@ function createTrack(track) {
   ]) {
     const wall = new THREE.Mesh(new THREE.BoxGeometry(width, 1.5, depth), wallMaterial);
     wall.position.set(x, 0.75, z);
+    wall.castShadow = true;
     scene.add(wall);
   }
+
+  addCircuitDecoration(track);
 
   const start = track.points[0];
   const next = track.points[1];
@@ -287,87 +493,396 @@ function createTrack(track) {
   }
   scene.add(startLine);
 
-  const buildingBoxes = [];
-  for (let x = -limits + 8; x < limits; x += 13) {
-    for (let z = -limits + 8; z < limits; z += 13) {
-      if (getTrackDistance(track, x, z) < track.width / 2 + 7) continue;
-      buildingBoxes.push({ x, z, width: 5 + ((x * 7 + z * 3) % 3 + 3) % 3, depth: 5 + ((z * 5 + x) % 3 + 3) % 3, height: 3 + ((x * x + z * z) % 9) });
+  const gridMarks = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(1.1, 0.055, 2.4),
+    new THREE.MeshStandardMaterial({ color: "#e9eddf", roughness: 0.9 }),
+    8
+  );
+  const gridMatrix = new THREE.Matrix4();
+  const gridPosition = new THREE.Vector3();
+  const gridRotation = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 1, 0),
+    Math.atan2(-tangentZ, tangentX)
+  );
+  const gridScale = new THREE.Vector3(1, 1, 1);
+  for (let index = 0; index < 8; index += 1) {
+    const row = Math.floor(index / 2);
+    const lane = index % 2 === 0 ? -1 : 1;
+    const lateral = lane * Math.min(track.width / 4, 2.2);
+    const distance = 4 + row * 4.5;
+    gridPosition.set(
+      start[0] - tangentX / tangentLength * distance + normalX * lateral,
+      0.09,
+      start[1] - tangentZ / tangentLength * distance + normalZ * lateral
+    );
+    gridMatrix.compose(gridPosition, gridRotation, gridScale);
+    gridMarks.setMatrixAt(index, gridMatrix);
+  }
+  gridMarks.instanceMatrix.needsUpdate = true;
+  gridMarks.receiveShadow = true;
+  scene.add(gridMarks);
+
+  const finishGate = new THREE.Group();
+  const gateMaterial = new THREE.MeshStandardMaterial({ color: "#f1ead4", metalness: 0.12, roughness: 0.55 });
+  const pillarGeometry = new THREE.BoxGeometry(0.55, 3.8, 0.65);
+  for (const side of [-1, 1]) {
+    const pillar = new THREE.Mesh(pillarGeometry, gateMaterial);
+    pillar.position.set(start[0] + normalX * side * (track.width / 2 + 0.4), 1.9, start[1] + normalZ * side * (track.width / 2 + 0.4));
+    pillar.castShadow = true;
+    finishGate.add(pillar);
+  }
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(track.width + 1.2, 0.62, 0.72), gateMaterial);
+  beam.position.set(start[0], 3.65, start[1]);
+  beam.rotation.y = Math.atan2(-normalZ, normalX);
+  beam.castShadow = true;
+  finishGate.add(beam);
+  const finishSign = new THREE.Mesh(
+    new THREE.BoxGeometry(track.width * 0.58, 0.44, 0.12),
+    new THREE.MeshStandardMaterial({ color: "#17383a", emissive: "#0f4640", roughness: 0.4 })
+  );
+  finishSign.position.set(start[0], 3.68, start[1] - tangentZ / tangentLength * 0.45);
+  finishSign.rotation.y = Math.atan2(-tangentZ, tangentX);
+  finishGate.add(finishSign);
+  scene.add(finishGate);
+}
+
+function getCatalogItem(itemId) {
+  return catalogData?.items.find((item) => item.id === itemId) || null;
+}
+
+function createCamoTexture(baseColor, pattern, accent) {
+  if (!pattern || pattern === "none") return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 256;
+  const context = canvas.getContext("2d");
+  context.fillStyle = baseColor;
+  context.fillRect(0, 0, 256, 256);
+  context.fillStyle = accent;
+  context.strokeStyle = accent;
+  if (pattern === "stripes") {
+    context.globalAlpha = 0.85;
+    context.lineWidth = 28;
+    for (let x = -256; x < 512; x += 78) {
+      context.beginPath();
+      context.moveTo(x, 0);
+      context.lineTo(x + 256, 256);
+      context.stroke();
+    }
+  } else if (pattern === "camo") {
+    let seed = 41;
+    const random = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+    context.globalAlpha = 0.55;
+    for (let index = 0; index < 38; index += 1) {
+      const x = random() * 256;
+      const y = random() * 256;
+      context.beginPath();
+      context.ellipse(x, y, 12 + random() * 22, 7 + random() * 15, random() * Math.PI, 0, Math.PI * 2);
+      context.fill();
+    }
+  } else if (pattern === "carbon") {
+    context.globalAlpha = 0.5;
+    context.lineWidth = 4;
+    for (let x = -256; x < 512; x += 24) {
+      context.beginPath();
+      context.moveTo(x, 0);
+      context.lineTo(x + 256, 256);
+      context.stroke();
+      context.beginPath();
+      context.moveTo(x + 12, 0);
+      context.lineTo(x - 244, 256);
+      context.stroke();
+    }
+  } else if (pattern === "neon") {
+    context.globalAlpha = 0.9;
+    context.lineWidth = 7;
+    for (let y = 28; y < 256; y += 64) {
+      context.beginPath();
+      context.moveTo(0, y);
+      context.lineTo(256, y - 28);
+      context.stroke();
+    }
+  } else if (pattern === "checker") {
+    context.globalAlpha = 0.92;
+    for (let y = 0; y < 256; y += 32) {
+      for (let x = 0; x < 256; x += 32) {
+        if ((x + y) % 64 === 0) context.fillRect(x, y, 32, 32);
+      }
     }
   }
-  if (buildingBoxes.length) {
-    const buildings = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshStandardMaterial({ color: "#d7c6a9", flatShading: true }),
-      buildingBoxes.length
+  context.globalAlpha = 1;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(1, 1);
+  texture.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 4);
+  return texture;
+}
+
+function createCar(color, cosmetics = {}) {
+  const car = new THREE.Group();
+  const camo = getCatalogItem(cosmetics.camo);
+  const paintStyle = getCatalogItem(cosmetics.color);
+  const wheelStyle = getCatalogItem(cosmetics.wheels);
+  const helmetStyle = getCatalogItem(cosmetics.helmet);
+  const spoilerStyle = getCatalogItem(cosmetics.spoiler);
+  const trailStyle = getCatalogItem(cosmetics.trail);
+  const bodyTexture = createCamoTexture(color, camo?.pattern, camo?.accent || "#f4f0dc");
+  const paint = new THREE.MeshStandardMaterial({
+    color: bodyTexture ? "#ffffff" : color,
+    map: bodyTexture,
+    roughness: 0.34,
+    metalness: paintStyle?.finish === "metallic" ? 0.58 : 0.04,
+    flatShading: true,
+  });
+  const dark = new THREE.MeshStandardMaterial({ color: "#17292b", roughness: 0.75, flatShading: true });
+  const glass = new THREE.MeshPhysicalMaterial({
+    color: "#6d9e9d",
+    roughness: 0.16,
+    metalness: 0.14,
+    transparent: true,
+    opacity: 0.72,
+    clearcoat: 0.8,
+  });
+  const trim = new THREE.MeshStandardMaterial({ color: "#101a1d", metalness: 0.28, roughness: 0.58 });
+  const lightFront = new THREE.MeshStandardMaterial({ color: "#fff2bc", emissive: "#ffd85f", emissiveIntensity: 1.4 });
+  const lightRear = new THREE.MeshStandardMaterial({ color: "#ff5b50", emissive: "#af1719", emissiveIntensity: 1.1 });
+  const addPart = (geometry, material, position, rotation = null) => {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(...position);
+    if (rotation) mesh.rotation.set(...rotation);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    car.add(mesh);
+    return mesh;
+  };
+
+  addPart(new THREE.BoxGeometry(1.82, 0.42, 3.8), paint, [0, 0.62, 0.02]);
+  addPart(new THREE.BoxGeometry(1.96, 0.28, 2.45), paint, [0, 0.82, 0.22]);
+  addPart(new THREE.BoxGeometry(1.46, 0.2, 1.27), paint, [0, 0.77, -1.37]);
+  addPart(new THREE.BoxGeometry(1.9, 0.11, 0.58), trim, [0, 0.48, -1.88]);
+  addPart(new THREE.BoxGeometry(1.9, 0.13, 0.42), trim, [0, 0.48, 1.9]);
+  addPart(new THREE.BoxGeometry(1.25, 0.47, 1.27), dark, [0, 1.02, 0.1]);
+  addPart(new THREE.BoxGeometry(1.13, 0.39, 0.76), glass, [0, 1.16, -0.02], [-0.18, 0, 0]);
+  addPart(new THREE.BoxGeometry(0.95, 0.31, 0.52), glass, [0, 1.1, 0.62], [0.24, 0, 0]);
+  addPart(new THREE.SphereGeometry(0.31, 10, 8), new THREE.MeshStandardMaterial({ color: "#f1c79f", flatShading: true }), [0, 1.39, 0.14]);
+  const helmetColor = helmetStyle?.color || color;
+  addPart(new THREE.SphereGeometry(0.42, 12, 9), new THREE.MeshStandardMaterial({ color: helmetColor, metalness: 0.18, roughness: 0.32, flatShading: true }), [0, 1.7, 0.12]);
+  addPart(new THREE.BoxGeometry(0.56, 0.19, 0.08), new THREE.MeshStandardMaterial({ color: helmetStyle?.visor || "#193d45", metalness: 0.38, roughness: 0.22 }), [0, 1.7, -0.27]);
+  addPart(new THREE.BoxGeometry(0.16, 0.14, 0.82), trim, [-0.89, 0.94, -0.55]);
+  addPart(new THREE.BoxGeometry(0.16, 0.14, 0.82), trim, [0.89, 0.94, -0.55]);
+  for (const side of [-1, 1]) {
+    addPart(new THREE.BoxGeometry(0.26, 0.14, 0.22), paint, [side * 1.02, 1.03, -0.74]);
+    addPart(new THREE.BoxGeometry(0.22, 0.09, 0.12), lightFront, [side * 0.68, 0.76, -1.99]);
+    addPart(new THREE.BoxGeometry(0.28, 0.1, 0.11), lightRear, [side * 0.64, 0.72, 1.96]);
+  }
+
+  const wheelGroups = [];
+  const frontWheelGroups = [];
+  const tireMaterial = new THREE.MeshStandardMaterial({
+    color: wheelStyle?.style === "offroad" ? "#292a27" : "#171d1e",
+    roughness: 0.94,
+    flatShading: true,
+  });
+  const rimMaterial = new THREE.MeshStandardMaterial({
+    color: wheelStyle?.color || "#c5d0ca",
+    metalness: wheelStyle?.style === "gold" ? 0.82 : 0.68,
+    roughness: wheelStyle?.style === "neon" ? 0.22 : 0.38,
+    emissive: wheelStyle?.style === "neon" ? wheelStyle.color : "#000000",
+    emissiveIntensity: wheelStyle?.style === "neon" ? 0.45 : 0,
+  });
+  for (const x of [-1.03, 1.03]) {
+    for (const z of [-1.19, 1.2]) {
+      const wheel = new THREE.Group();
+      wheel.position.set(x, 0.4, z);
+      const radius = wheelStyle?.style === "offroad" ? 0.41 : 0.37;
+      const tire = addPart(new THREE.CylinderGeometry(radius, radius, 0.3, wheelStyle?.style === "offroad" ? 10 : 14), tireMaterial, [0, 0, 0], [0, 0, Math.PI / 2]);
+      wheel.remove(tire);
+      car.remove(tire);
+      wheel.add(tire);
+      const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.23, 0.315, 12), rimMaterial);
+      rim.rotation.z = Math.PI / 2;
+      rim.castShadow = true;
+      wheel.add(rim);
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.34, 10), trim);
+      hub.rotation.z = Math.PI / 2;
+      wheel.add(hub);
+      for (let spoke = 0; spoke < (wheelStyle?.style === "sport" ? 8 : 5); spoke += 1) {
+        const angle = spoke / (wheelStyle?.style === "sport" ? 8 : 5) * Math.PI * 2;
+        const spokeMesh = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.055, 0.34), rimMaterial);
+        spokeMesh.position.set(0, Math.cos(angle) * 0.12, Math.sin(angle) * 0.12);
+        spokeMesh.rotation.x = angle;
+        wheel.add(spokeMesh);
+      }
+      car.add(wheel);
+      wheelGroups.push(wheel);
+      if (z < 0) frontWheelGroups.push(wheel);
+    }
+  }
+
+  const spoilerWidth = spoilerStyle?.style === "gt" ? 2.4 : spoilerStyle?.style === "double" ? 2.1 : 1.85;
+  const spoilerHeight = spoilerStyle?.style === "low" ? 0.99 : 1.35;
+  addPart(new THREE.BoxGeometry(0.11, 0.44, 0.12), trim, [-0.62, spoilerHeight - 0.16, 1.43]);
+  addPart(new THREE.BoxGeometry(0.11, 0.44, 0.12), trim, [0.62, spoilerHeight - 0.16, 1.43]);
+  addPart(new THREE.BoxGeometry(spoilerWidth, 0.14, 0.34), paint, [0, spoilerHeight, 1.48]);
+  if (spoilerStyle?.style === "double") {
+    addPart(new THREE.BoxGeometry(spoilerWidth * 0.82, 0.1, 0.3), paint, [0, spoilerHeight - 0.29, 1.51]);
+  }
+
+  const trailColor = trailStyle?.color || "#e7f2eb";
+  const trailGeometry = trailStyle?.style === "flame"
+    ? new THREE.ConeGeometry(0.13, 0.52, 6)
+    : trailStyle?.style === "sparks"
+      ? new THREE.TetrahedronGeometry(0.18, 0)
+      : trailStyle?.style === "neon"
+        ? new THREE.BoxGeometry(0.08, 0.08, 0.42)
+        : new THREE.SphereGeometry(0.15, 7, 5);
+  const trailGroup = new THREE.Group();
+  for (let index = 0; index < 4; index += 1) {
+    const particle = new THREE.Mesh(
+      trailGeometry,
+      new THREE.MeshBasicMaterial({ color: trailColor, transparent: true, opacity: 0.45 - index * 0.07 })
     );
-    const matrix = new THREE.Matrix4();
-    const position = new THREE.Vector3();
-    const rotation = new THREE.Quaternion();
-    const scale = new THREE.Vector3();
-    buildingBoxes.forEach((building, index) => {
-      position.set(building.x, building.height / 2, building.z);
-      scale.set(building.width, building.height, building.depth);
-      matrix.compose(position, rotation, scale);
-      buildings.setMatrixAt(index, matrix);
-      buildings.setColorAt(index, new THREE.Color(["#d7c6a9", "#c5d0ca", "#d9b8a5", "#a9b8b2"][index % 4]));
-    });
-    buildings.instanceMatrix.needsUpdate = true;
-    if (buildings.instanceColor) buildings.instanceColor.needsUpdate = true;
-    scene.add(buildings);
+    particle.position.set((index % 2 ? 1 : -1) * 0.14, 0.5 - index * 0.03, 2.08 + index * 0.34);
+    if (trailStyle?.style === "flame") particle.rotation.x = Math.PI / 2;
+    trailGroup.add(particle);
+  }
+  trailGroup.visible = trailStyle?.style !== "none";
+  car.add(trailGroup);
+  car.userData.wheelGroups = wheelGroups;
+  car.userData.frontWheelGroups = frontWheelGroups;
+  car.userData.trailGroup = trailGroup;
+  car.userData.trailStyle = trailStyle?.style || "none";
+  car.userData.cosmeticSignature = cosmeticSignature(cosmetics);
+  car.traverse((object) => {
+    if (object.isMesh) {
+      object.castShadow = true;
+      object.receiveShadow = true;
+    }
+  });
+  return car;
+}
+
+function cosmeticSignature(cosmetics = {}) {
+  return cosmeticCategories.map((category) => cosmetics[category] || "").join("|");
+}
+
+function disposeCar(mesh) {
+  mesh.traverse((object) => {
+    if (!object.isMesh) return;
+    object.geometry?.dispose();
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    for (const material of materials) {
+      if (!material) continue;
+      material.map?.dispose();
+      material.dispose();
+    }
+  });
+}
+
+function getEquippedCosmetics() {
+  return { ...(accountProfile?.equipped || catalogData?.defaults || {}) };
+}
+
+function getCosmeticColor(cosmetics) {
+  return getCatalogItem(cosmetics.color)?.color || "#30d6c1";
+}
+
+function setPreviewAppearance(containerId, cosmetics, label) {
+  const preview = previewViews.get(containerId);
+  if (!preview) return;
+  if (preview.car) {
+    preview.scene.remove(preview.car);
+    disposeCar(preview.car);
+  }
+  preview.car = createCar(getCosmeticColor(cosmetics), cosmetics);
+  preview.car.rotation.y = Math.PI / 4;
+  preview.scene.add(preview.car);
+  const labelElement = document.querySelector(`#${containerId}-label`);
+  if (labelElement) labelElement.textContent = label;
+}
+
+function initializePreview(containerId) {
+  if (previewViews.has(containerId) || !catalogData) return;
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const previewRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "low-power" });
+  previewRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+  previewRenderer.shadowMap.enabled = true;
+  previewRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  previewRenderer.outputColorSpace = THREE.SRGBColorSpace;
+  previewRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+  previewRenderer.toneMappingExposure = 1.12;
+  container.appendChild(previewRenderer.domElement);
+  const previewScene = new THREE.Scene();
+  previewScene.background = new THREE.Color("#17383a");
+  previewScene.add(new THREE.HemisphereLight("#e3f6e8", "#334c49", 2));
+  const keyLight = new THREE.DirectionalLight("#fff0cf", 3);
+  keyLight.position.set(-5, 9, 6);
+  keyLight.castShadow = true;
+  keyLight.shadow.mapSize.set(512, 512);
+  previewScene.add(keyLight);
+  const floor = new THREE.Mesh(
+    new THREE.CircleGeometry(5.5, 48),
+    new THREE.MeshStandardMaterial({ color: "#254345", roughness: 0.95 })
+  );
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = -0.08;
+  floor.receiveShadow = true;
+  previewScene.add(floor);
+  const previewCamera = new THREE.PerspectiveCamera(39, 1, 0.1, 50);
+  previewCamera.position.set(5.1, 3.5, 6.4);
+  previewCamera.lookAt(0, 0.75, 0);
+  const preview = {
+    container,
+    renderer: previewRenderer,
+    scene: previewScene,
+    camera: previewCamera,
+    car: null,
+    dragging: false,
+    lastPointerX: 0,
+  };
+  previewViews.set(containerId, preview);
+  previewRenderer.domElement.addEventListener("pointerdown", (event) => {
+    preview.dragging = true;
+    preview.lastPointerX = event.clientX;
+    previewRenderer.domElement.setPointerCapture(event.pointerId);
+  });
+  previewRenderer.domElement.addEventListener("pointermove", (event) => {
+    if (!preview.dragging || !preview.car) return;
+    preview.car.rotation.y += (event.clientX - preview.lastPointerX) * 0.012;
+    preview.lastPointerX = event.clientX;
+  });
+  previewRenderer.domElement.addEventListener("pointerup", () => { preview.dragging = false; });
+  previewRenderer.domElement.addEventListener("pointercancel", () => { preview.dragging = false; });
+  resizePreviewViews();
+  const cosmetics = getEquippedCosmetics();
+  const initialLabel = accountProfile ? `${accountProfile.username} · equipado` : "Configuración base gratuita";
+  preview.car = createCar(getCosmeticColor(cosmetics), cosmetics);
+  preview.car.rotation.y = Math.PI / 4;
+  previewScene.add(preview.car);
+  const label = document.querySelector(`#${containerId}-label`);
+  if (label) label.textContent = initialLabel;
+  if (!renderLoopStarted) {
+    renderLoopStarted = true;
+    renderFrame();
   }
 }
 
-function createCar(color) {
-  const car = new THREE.Group();
-  const paint = new THREE.MeshStandardMaterial({ color, roughness: 0.53, metalness: 0.08, flatShading: true });
-  const dark = new THREE.MeshStandardMaterial({ color: "#17292b", roughness: 0.8, flatShading: true });
-  const accent = new THREE.MeshStandardMaterial({ color: "#f4f0dc", emissive: "#554d38", flatShading: true });
-  const body = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.52, 3.35), paint);
-  body.position.y = 0.65;
-  car.add(body);
-
-  const nose = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.22, 0.72), paint);
-  nose.position.set(0, 0.84, -1.23);
-  car.add(nose);
-  const cockpit = new THREE.Mesh(new THREE.BoxGeometry(1.28, 0.58, 1.22), dark);
-  cockpit.position.set(0, 1.04, 0.17);
-  car.add(cockpit);
-  const driver = new THREE.Mesh(
-    new THREE.SphereGeometry(0.43, 9, 7),
-    new THREE.MeshStandardMaterial({ color: "#f2c394", flatShading: true })
-  );
-  driver.position.set(0, 1.43, 0.05);
-  car.add(driver);
-  const helmet = new THREE.Mesh(
-    new THREE.SphereGeometry(0.49, 9, 7),
-    new THREE.MeshStandardMaterial({ color, flatShading: true })
-  );
-  helmet.position.set(0, 1.72, 0.02);
-  car.add(helmet);
-
-  const wheels = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.38, 0.38, 0.28, 9), dark, 4);
-  const wheelMatrix = new THREE.Matrix4();
-  const wheelPosition = new THREE.Vector3();
-  const wheelRotation = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2);
-  const wheelScale = new THREE.Vector3(1, 1, 1);
-  let wheelIndex = 0;
-  for (const x of [-1.03, 1.03]) {
-    for (const z of [-1.05, 1.04]) {
-      wheelPosition.set(x, 0.4, z);
-      wheelMatrix.compose(wheelPosition, wheelRotation, wheelScale);
-      wheels.setMatrixAt(wheelIndex, wheelMatrix);
-      wheelIndex += 1;
-    }
+function resizePreviewViews() {
+  for (const [containerId, preview] of previewViews) {
+    const container = document.getElementById(containerId);
+    if (!container) continue;
+    const width = Math.max(container.clientWidth, 1);
+    const height = Math.max(container.clientHeight, 1);
+    preview.renderer.setSize(width, height, false);
+    preview.camera.aspect = width / height;
+    preview.camera.updateProjectionMatrix();
   }
-  wheels.instanceMatrix.needsUpdate = true;
-  car.add(wheels);
-  const lights = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.14, 0.08), accent);
-  lights.position.set(0, 0.78, -1.71);
-  car.add(lights);
-  const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.13, 0.35), paint);
-  spoiler.position.set(0, 1.12, 1.58);
-  car.add(spoiler);
-  return car;
 }
 
 function resizeRenderer() {
@@ -376,6 +891,7 @@ function resizeRenderer() {
   renderer.setSize(width, height, false);
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
+  resizePreviewViews();
 }
 
 function shortestAngle(from, to) {
@@ -392,6 +908,29 @@ function renderFrame() {
     carView.mesh.position.lerp(carView.targetPosition, Math.min(1, dt * 8));
     const yawDifference = shortestAngle(carView.mesh.rotation.y, carView.targetYaw);
     carView.mesh.rotation.y += yawDifference * Math.min(1, dt * 8);
+    for (const wheel of carView.mesh.userData.wheelGroups || []) {
+      wheel.rotation.x += carView.speed * dt / 0.37;
+    }
+    for (const wheel of carView.mesh.userData.frontWheelGroups || []) {
+      wheel.rotation.y = -carView.steering * 0.32;
+    }
+    const trail = carView.mesh.userData.trailGroup;
+    if (trail) {
+      trail.visible = carView.accelerating && carView.mesh.userData.trailStyle !== "none";
+      if (trail.visible) {
+        trail.children.forEach((particle, index) => {
+          particle.position.z = 2.08 + index * 0.34 + (performance.now() / 380 + index * 0.45) % 0.45;
+          particle.scale.setScalar(0.85 + ((performance.now() / 250 + index) % 3) * 0.22);
+        });
+      }
+    }
+  }
+
+  for (const preview of previewViews.values()) {
+    if (!preview.container.getClientRects().length) continue;
+    if (!preview.dragging) preview.car.rotation.y += dt * 0.42;
+    for (const wheel of preview.car.userData.wheelGroups || []) wheel.rotation.x += dt * 0.8;
+    preview.renderer.render(preview.scene, preview.camera);
   }
 
   const playerCar = playerId ? carViews.get(playerId) : null;
@@ -401,11 +940,12 @@ function renderFrame() {
     camera.lookAt(playerCar.mesh.position.x, 1.2, playerCar.mesh.position.z);
   }
   updateRaceClock(performance.now());
-  renderer.render(scene, camera);
+  if (sceneReady && !raceScreen.classList.contains("is-hidden")) renderer.render(scene, camera);
 }
 
 function initializeScene(track) {
   if (sceneReady && sceneTrackId === track.id) return;
+  for (const carView of carViews.values()) disposeCar(carView.mesh);
   scene.clear();
   carViews.clear();
   sceneReady = true;
@@ -415,6 +955,73 @@ function initializeScene(track) {
   if (!renderLoopStarted) {
     renderLoopStarted = true;
     renderFrame();
+  }
+}
+
+function drawMinimap(state) {
+  const context = minimap.getContext("2d");
+  if (!context || !state.track?.points?.length) return;
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const width = minimap.clientWidth || 142;
+  const height = minimap.clientHeight || 142;
+  const pixelWidth = Math.round(width * ratio);
+  const pixelHeight = Math.round(height * ratio);
+  if (minimap.width !== pixelWidth || minimap.height !== pixelHeight) {
+    minimap.width = pixelWidth;
+    minimap.height = pixelHeight;
+  }
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, width, height);
+  const points = state.track.points;
+  const minX = Math.min(...points.map((point) => point[0]));
+  const maxX = Math.max(...points.map((point) => point[0]));
+  const minZ = Math.min(...points.map((point) => point[1]));
+  const maxZ = Math.max(...points.map((point) => point[1]));
+  const padding = 13;
+  const scale = Math.min(
+    (width - padding * 2) / Math.max(1, maxX - minX),
+    (height - padding * 2) / Math.max(1, maxZ - minZ)
+  );
+  const toCanvas = ([x, z]) => [
+    (width - (maxX - minX) * scale) / 2 + (x - minX) * scale,
+    height - ((height - (maxZ - minZ) * scale) / 2 + (z - minZ) * scale),
+  ];
+
+  context.beginPath();
+  points.forEach((point, index) => {
+    const [x, y] = toCanvas(point);
+    if (index === 0) context.moveTo(x, y);
+    else context.lineTo(x, y);
+  });
+  context.closePath();
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.strokeStyle = "rgba(5, 17, 19, .9)";
+  context.lineWidth = Math.max(7, state.track.width * scale + 4);
+  context.stroke();
+  context.strokeStyle = "#30d6c1";
+  context.lineWidth = Math.max(3, state.track.width * scale);
+  context.stroke();
+  context.strokeStyle = "rgba(236, 244, 224, .65)";
+  context.lineWidth = 1;
+  context.setLineDash([3, 3]);
+  context.stroke();
+  context.setLineDash([]);
+
+  for (const car of state.cars) {
+    const [x, y] = toCanvas([car.x, car.z]);
+    context.beginPath();
+    context.arc(x, y, car.id === playerId ? 5 : 3.2, 0, Math.PI * 2);
+    if (car.id === playerId) {
+      context.strokeStyle = "#ffffff";
+      context.lineWidth = 2;
+      context.shadowColor = "#30d6c1";
+      context.shadowBlur = 9;
+      context.stroke();
+      context.shadowBlur = 0;
+    }
+    context.fillStyle = car.color || "#e9f2e7";
+    context.fill();
   }
 }
 
@@ -466,6 +1073,7 @@ function updateRaceClock(now) {
 function onRaceState(state) {
   const previousPhase = latestState?.phase;
   latestState = state;
+  if (state.phase === "countdown" && previousPhase !== "countdown") rewardSignature = "";
   raceElapsedMs = Number(state.raceElapsedMs) || 0;
   raceClockSyncAt = performance.now();
   raceClockRunning = state.phase === "racing";
@@ -475,18 +1083,30 @@ function onRaceState(state) {
   for (const car of state.cars) {
     seenIds.add(car.id);
     let carView = carViews.get(car.id);
-    if (!carView) {
-      const mesh = createCar(car.color);
+    const signature = cosmeticSignature(car.cosmetics);
+    if (!carView || carView.cosmeticSignature !== signature) {
+      if (carView) {
+        scene.remove(carView.mesh);
+        disposeCar(carView.mesh);
+      }
+      const mesh = createCar(car.color, car.cosmetics);
       scene.add(mesh);
       carView = {
         mesh,
         targetPosition: new THREE.Vector3(car.x, 0, car.z),
         targetYaw: car.yaw,
+        speed: car.speed,
+        steering: car.steering || 0,
+        accelerating: car.accelerating === true,
+        cosmeticSignature: signature,
       };
       carViews.set(car.id, carView);
     }
     carView.targetPosition.set(car.x, 0, car.z);
     carView.targetYaw = car.yaw;
+    carView.speed = car.speed;
+    carView.steering = car.steering || 0;
+    carView.accelerating = car.accelerating === true;
     if (car.id === playerId) {
       document.querySelector("#speed-value").textContent = `${car.speed < -0.1 ? "R" : ""}${String(Math.round(Math.abs(car.speed) * 5.3)).padStart(2, "0")}`;
       document.querySelector("#lap-number").textContent = String(car.lap);
@@ -494,9 +1114,11 @@ function onRaceState(state) {
       document.querySelector("#place-suffix").textContent = car.place === 1 ? "º" : "º";
     }
   }
+  drawMinimap(state);
   for (const [id, carView] of carViews) {
     if (!seenIds.has(id)) {
       scene.remove(carView.mesh);
+      disposeCar(carView.mesh);
       carViews.delete(id);
     }
   }
@@ -510,6 +1132,7 @@ function onRaceState(state) {
   }
   lastRenderedPhase = state.phase;
   const isHost = state.hostId === playerId;
+  if (state.phase !== "finished") rewardSummary.classList.add("is-hidden");
   startButton.classList.toggle("is-hidden", !(isHost && state.phase === "lobby"));
   restartButton.classList.toggle("is-hidden", !(isHost && state.phase === "finished"));
   document.querySelector("#race-state-label").textContent = ({
@@ -527,6 +1150,27 @@ function onRaceState(state) {
   } else {
     const winner = state.cars[0];
     raceMessage.textContent = winner ? `${winner.name} GANA` : "¡META!";
+    const playerCar = state.cars.find((car) => car.id === playerId);
+    if (playerCar?.reward) {
+      const reward = playerCar.reward;
+      const bonuses = [
+        reward.completedBonus ? "BONUS 3 VUELTAS" : "",
+        reward.fastestLapBonus ? "VUELTA RÁPIDA" : "",
+      ].filter(Boolean);
+      const pointsBreakdown = `${reward.basePoints} posición + ${reward.completionPoints} vueltas + ${reward.fastestLapPoints} vuelta rápida`;
+      const coinsBreakdown = `${reward.baseCoins} posición + ${reward.completionCoins} vueltas + ${reward.fastestLapCoins} vuelta rápida`;
+      rewardSummary.textContent = reward.persistenceError
+        ? `+${reward.points} PUNTOS (${pointsBreakdown})\n+${reward.coins} RC (${coinsBreakdown})\nRECOMPENSA SIN PERSISTIR`
+        : `+${reward.points} PUNTOS (${pointsBreakdown})\n+${reward.coins} RC (${coinsBreakdown})${bonuses.length ? `\n${bonuses.join(" · ")}` : ""}`;
+      rewardSummary.classList.remove("is-hidden");
+      const signature = `${playerId}:${reward.points}:${reward.coins}`;
+      if (signature !== rewardSignature) {
+        rewardSignature = signature;
+        refreshAccountProfile();
+      }
+    } else {
+      rewardSummary.classList.add("is-hidden");
+    }
   }
 }
 
@@ -545,11 +1189,261 @@ function readControls() {
   }
 }
 
+function updateAccountUi() {
+  const accountActions = accountForm.querySelector(".account-actions");
+  accountForm.classList.toggle("is-authenticated", Boolean(accountProfile));
+  accountSummary.textContent = accountProfile
+    ? `${accountProfile.username} · Cuenta`
+    : "Cuenta · Iniciar sesión";
+  accountBalance.textContent = `${accountProfile?.coins ?? 500} RC`;
+  accountBalance.classList.toggle("is-hidden", !accountProfile);
+  accountActions.classList.toggle("is-hidden", Boolean(accountProfile));
+  logoutButton.classList.toggle("is-hidden", !accountProfile);
+  if (accountProfile) accountUsername.value = accountProfile.username;
+}
+
+async function requestApi(url, { method = "GET", body, authenticated = true } = {}) {
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (authenticated && sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
+  const response = await fetch(url, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (response.status === 204) return null;
+  const result = await response.json();
+  if (!response.ok) {
+    const error = new Error(result.error || "No se pudo completar la operación.");
+    error.status = response.status;
+    throw error;
+  }
+  return result;
+}
+
+function refreshCatalogViews() {
+  if (!catalogData) return;
+  renderCatalogPanel("store");
+  renderCatalogPanel("garage");
+  const storeItem = catalogData.items.find((item) => item.id === selectedStoreItemId);
+  const storeCosmetics = storeItem
+    ? { ...getEquippedCosmetics(), [storeItem.category]: storeItem.id }
+    : getEquippedCosmetics();
+  const storeLabel = storeItem ? `${storeItem.name} · vista previa` : "Configuración base gratuita";
+  setPreviewAppearance("store-preview", storeCosmetics, storeLabel);
+
+  const garageItem = catalogData.items.find((item) => item.id === selectedGarageItemId);
+  const garageCosmetics = garageItem
+    ? { ...getEquippedCosmetics(), [garageItem.category]: garageItem.id }
+    : getEquippedCosmetics();
+  const garageLabel = garageItem ? `${garageItem.name} · vista previa` : "Tu coche equipado";
+  setPreviewAppearance("garage-preview", garageCosmetics, garageLabel);
+}
+
+function renderCatalogPanel(mode) {
+  const isStore = mode === "store";
+  const categoryHost = document.getElementById(`${mode}-categories`);
+  const itemHost = document.getElementById(`${mode}-items`);
+  const message = document.getElementById(`${mode}-message`);
+  categoryHost.replaceChildren();
+  for (const category of cosmeticCategories) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `category-tab${category === selectedCategory ? " is-active" : ""}`;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(category === selectedCategory));
+    button.textContent = categoryLabels[category];
+    button.addEventListener("click", () => {
+      selectedCategory = category;
+      selectedStoreItemId = null;
+      selectedGarageItemId = null;
+      refreshCatalogViews();
+    });
+    categoryHost.appendChild(button);
+  }
+
+  const owned = new Set(accountProfile?.inventory || []);
+  const visibleItems = catalogData.items.filter((item) => (
+    item.category === selectedCategory && (isStore || owned.has(item.id))
+  ));
+  itemHost.replaceChildren();
+  if (!visibleItems.length) {
+    const empty = document.createElement("p");
+    empty.className = "catalog-empty";
+    empty.textContent = isStore
+      ? "No hay artículos en esta categoría."
+      : accountProfile ? "Aún no tienes artículos de esta categoría." : "Inicia sesión para consultar tu inventario.";
+    itemHost.appendChild(empty);
+    if (!isStore) message.textContent = "";
+    return;
+  }
+
+  const selectedId = isStore ? selectedStoreItemId : selectedGarageItemId;
+  const selectedItem = visibleItems.find((item) => item.id === selectedId)
+    || visibleItems.find((item) => item.id === accountProfile?.equipped?.[selectedCategory])
+    || visibleItems[0];
+  if (isStore) selectedStoreItemId = selectedItem.id;
+  else selectedGarageItemId = selectedItem.id;
+
+  for (const item of visibleItems) {
+    const card = document.createElement("article");
+    card.className = `catalog-item${item.id === selectedItem.id ? " is-selected" : ""}`;
+    card.addEventListener("click", () => {
+      if (isStore) selectedStoreItemId = item.id;
+      else selectedGarageItemId = item.id;
+      refreshCatalogViews();
+    });
+    const description = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = item.name;
+    const detail = document.createElement("small");
+    const equipped = accountProfile?.equipped?.[item.category] === item.id;
+    detail.textContent = equipped ? "Equipado" : item.price === 0 ? "Artículo base" : `${item.price} RaceCoins`;
+    description.append(title, detail);
+    const action = document.createElement("button");
+    action.type = "button";
+    action.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (isStore) buyCatalogItem(item);
+      else equipCatalogItem(item);
+    });
+
+    if (isStore) {
+      if (equipped) {
+        action.textContent = "EQUIPADO";
+        action.disabled = true;
+      } else if (owned.has(item.id)) {
+        action.textContent = "COMPRADO";
+        action.disabled = true;
+      } else if (!accountProfile) {
+        action.textContent = "INICIA SESIÓN";
+        action.disabled = true;
+      } else {
+        action.textContent = `COMPRAR · ${item.price} RC`;
+      }
+    } else {
+      action.textContent = equipped ? "EQUIPADO" : "EQUIPAR";
+      action.disabled = equipped;
+    }
+    card.append(description, action);
+    itemHost.appendChild(card);
+  }
+}
+
+async function buyCatalogItem(item) {
+  const message = document.querySelector("#store-message");
+  message.textContent = "";
+  try {
+    accountProfile = await requestApi("/api/shop/buy", { method: "POST", body: { itemId: item.id } });
+    updateAccountUi();
+    message.textContent = `${item.name} comprado por ${item.price} RC.`;
+    refreshCatalogViews();
+  } catch (error) {
+    message.textContent = error.message;
+  }
+}
+
+async function equipCatalogItem(item) {
+  const message = document.querySelector("#garage-message");
+  message.textContent = "";
+  try {
+    accountProfile = await requestApi("/api/inventory/equip", {
+      method: "POST",
+      body: { category: item.category, itemId: item.id },
+    });
+    updateAccountUi();
+    message.textContent = `${item.name} equipado.`;
+    refreshCatalogViews();
+  } catch (error) {
+    message.textContent = error.message;
+  }
+}
+
+async function refreshAccountProfile() {
+  if (!sessionToken) {
+    accountProfile = null;
+    updateAccountUi();
+    refreshCatalogViews();
+    return null;
+  }
+  try {
+    accountProfile = await requestApi("/api/me");
+    accountError.textContent = "";
+    updateAccountUi();
+    refreshCatalogViews();
+    return accountProfile;
+  } catch (error) {
+    accountError.textContent = error.message;
+    if (error.status === 401) {
+      sessionToken = "";
+      localStorage.removeItem("race2win.sessionToken");
+      accountProfile = null;
+      updateAccountUi();
+      refreshCatalogViews();
+    }
+    return null;
+  }
+}
+
+async function authenticate(endpoint) {
+  accountError.textContent = "";
+  try {
+    const result = await requestApi(endpoint, {
+      method: "POST",
+      body: { username: accountUsername.value.trim(), password: accountPassword.value },
+      authenticated: false,
+    });
+    sessionToken = result.token;
+    localStorage.setItem("race2win.sessionToken", sessionToken);
+    accountProfile = result.profile;
+    accountPassword.value = "";
+    accountForm.closest("details").open = false;
+    updateAccountUi();
+    refreshCatalogViews();
+  } catch (error) {
+    accountError.textContent = error.message;
+  }
+}
+
+function showMainScreen(screenId) {
+  if (!raceScreen.classList.contains("is-hidden")) return;
+  joinScreen.classList.toggle("is-hidden", screenId !== "join-screen");
+  storeScreen.classList.toggle("is-hidden", screenId !== "store-screen");
+  garageScreen.classList.toggle("is-hidden", screenId !== "garage-screen");
+  document.querySelectorAll(".nav-button").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.screen === screenId);
+  });
+  if (screenId === "store-screen") initializePreview("store-preview");
+  if (screenId === "garage-screen") initializePreview("garage-preview");
+  resizePreviewViews();
+  refreshCatalogViews();
+}
+
+document.querySelectorAll(".nav-button").forEach((button) => {
+  button.addEventListener("click", () => showMainScreen(button.dataset.screen));
+});
+document.querySelector("#login-button").addEventListener("click", () => authenticate("/api/login"));
+document.querySelector("#register-button").addEventListener("click", () => authenticate("/api/register"));
+accountForm.addEventListener("submit", (event) => event.preventDefault());
+logoutButton.addEventListener("click", async () => {
+  try {
+    await requestApi("/api/logout", { method: "POST", body: {} });
+  } catch (error) {
+    accountError.textContent = error.message;
+  }
+  sessionToken = "";
+  accountProfile = null;
+  localStorage.removeItem("race2win.sessionToken");
+  updateAccountUi();
+  refreshCatalogViews();
+});
+
 joinForm.addEventListener("submit", (event) => {
   event.preventDefault();
   joinError.textContent = "";
   const formData = new FormData(joinForm);
-  socket = window.io();
+  rewardSummary.classList.add("is-hidden");
+  socket = window.io({ auth: sessionToken ? { token: sessionToken } : {} });
   connectionLabel.textContent = "CONECTANDO";
   socket.on("connect", () => {
     connectionLabel.textContent = "CONECTADO";
@@ -558,6 +1452,7 @@ joinForm.addEventListener("submit", (event) => {
       maxPlayers: Number(formData.get("maxPlayers")),
       botsEnabled: formData.get("botsEnabled") === "on",
       trackId: formData.get("trackId"),
+      token: sessionToken || undefined,
     }, (result) => {
       if (!result?.ok) {
         joinError.textContent = result?.error || "No se pudo entrar en la sala.";
@@ -566,13 +1461,17 @@ joinForm.addEventListener("submit", (event) => {
       }
       playerId = result.id;
       joinScreen.classList.add("is-hidden");
+      storeScreen.classList.add("is-hidden");
+      garageScreen.classList.add("is-hidden");
       raceScreen.classList.remove("is-hidden");
       resizeRenderer();
     });
   });
-  socket.on("connect_error", () => {
+  socket.on("connect_error", (error) => {
     connectionLabel.textContent = "SIN CONEXIÓN";
-    joinError.textContent = "No se pudo conectar con el servidor local.";
+    joinError.textContent = error.message?.includes("sesión")
+      ? "La sesión de la cuenta ha caducado. Inicia sesión de nuevo."
+      : "No se pudo conectar con el servidor local.";
   });
   socket.on("raceState", onRaceState);
 });
@@ -594,6 +1493,12 @@ leaveButton.addEventListener("click", () => {
   lastSentInput = { throttle: 0, brake: 0, steer: 0 };
   joinScreen.classList.remove("is-hidden");
   raceScreen.classList.add("is-hidden");
+  storeScreen.classList.add("is-hidden");
+  garageScreen.classList.add("is-hidden");
+  document.querySelectorAll(".nav-button").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.screen === "join-screen");
+  });
+  rewardSummary.classList.add("is-hidden");
   joinError.textContent = "";
   connectionLabel.textContent = "SERVIDOR LOCAL";
 });
@@ -612,6 +1517,22 @@ window.addEventListener("blur", () => {
   readControls();
 });
 window.addEventListener("resize", resizeRenderer);
+
+async function initializeCatalog() {
+  try {
+    const response = await fetch("/catalog.json");
+    if (!response.ok) throw new Error("No se pudo cargar el catálogo de cosméticos.");
+    catalogData = await response.json();
+    refreshCatalogViews();
+    await refreshAccountProfile();
+  } catch (error) {
+    accountError.textContent = error.message;
+    console.error("No se pudo inicializar la tienda y el garaje.", error);
+  }
+}
+
+updateAccountUi();
+initializeCatalog();
 
 fetch("/api/info")
   .then((response) => response.json())

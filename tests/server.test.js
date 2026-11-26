@@ -1,19 +1,27 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { afterEach, beforeEach, test } = require("node:test");
 const { io: createClient } = require("socket.io-client");
 const tracks = require("../public/tracks.json");
+const catalog = require("../public/catalog.json");
+const { getTrackEdges } = require("../public/track-geometry");
 const {
   areHumanDriversFinished,
+  calculateRaceRewards,
   constrainCarToMap,
   constrainCarToTrack,
   createGameServer,
   getCrossingTimeMs,
   getFinishTiming,
   resolveCarCollisions,
+  settleRaceOnce,
 } = require("../server");
 
 let game;
 let baseUrl;
+let dataDir;
 
 function connect(client) {
   if (client.connected) return Promise.resolve();
@@ -39,6 +47,50 @@ function waitForRaceState(client, predicate, timeoutMs = 3000) {
     }
     client.on("raceState", onState);
   });
+}
+
+async function requestJson(endpoint, { method = "GET", body, token } = {}) {
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(`${baseUrl}${endpoint}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return {
+    response,
+    data: response.status === 204 ? null : await response.json(),
+  };
+}
+
+async function createTestAccount(username = "PilotTest", password = "RacingPass123") {
+  const { response, data } = await requestJson("/api/register", {
+    method: "POST",
+    body: { username, password },
+  });
+  assert.equal(response.status, 201);
+  return data;
+}
+
+function getTrackOffset(track, car) {
+  const edges = getTrackEdges(track);
+  let nearest = null;
+  for (let index = 0; index < track.points.length; index += 1) {
+    const start = track.points[index];
+    const end = track.points[(index + 1) % track.points.length];
+    const dx = end[0] - start[0];
+    const dz = end[1] - start[1];
+    const fraction = Math.max(0, Math.min(1, ((car.x - start[0]) * dx + (car.z - start[1]) * dz) / (dx * dx + dz * dz)));
+    const distance = Math.hypot(car.x - start[0] - dx * fraction, car.z - start[1] - dz * fraction);
+    if (!nearest || distance < nearest.distance) {
+      nearest = {
+        distance,
+        width: edges[index].width + (edges[(index + 1) % edges.length].width - edges[index].width) * fraction,
+      };
+    }
+  }
+  return nearest;
 }
 
 function wrapAngle(angle) {
@@ -70,13 +122,15 @@ function segmentsIntersect(a, b, c, d) {
 }
 
 beforeEach(async () => {
-  game = createGameServer();
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "race2win-test-"));
+  game = createGameServer({ dataDir });
   await new Promise((resolve) => game.httpServer.listen(0, "127.0.0.1", resolve));
   baseUrl = `http://127.0.0.1:${game.httpServer.address().port}`;
 });
 
 afterEach(async () => {
   await game.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
 test("reports the winner's elapsed time and the other finishers' gaps", () => {
@@ -110,6 +164,51 @@ test("keeps finish times distinct when racers cross during the same server tick"
   assert.ok(firstCrossing < tickEndTime);
 });
 
+test("calculates competitive rewards with completion and fastest-lap bonuses", () => {
+  const solo = calculateRaceRewards({
+    place: 1,
+    entrantCount: 1,
+    lapsCompleted: 3,
+    bestLapMs: 90000,
+    fastestLapMs: 90000,
+  });
+  assert.equal(solo.coins, 0);
+  assert.equal(solo.points, 0);
+  assert.equal(solo.rivals, 0);
+
+  const winner = calculateRaceRewards({
+    place: 1,
+    entrantCount: 4,
+    lapsCompleted: 3,
+    bestLapMs: 90000,
+    fastestLapMs: 90000,
+  });
+  assert.equal(winner.points, 160);
+  assert.equal(winner.coins, 175);
+  assert.equal(winner.completedBonus, true);
+  assert.equal(winner.fastestLapBonus, true);
+
+  const second = calculateRaceRewards({
+    place: 2,
+    entrantCount: 4,
+    lapsCompleted: 2,
+    bestLapMs: 91000,
+    fastestLapMs: 90000,
+  });
+  assert.equal(second.points, 70);
+  assert.equal(second.coins, 85);
+  assert.equal(second.completedBonus, false);
+  assert.equal(second.fastestLapBonus, false);
+});
+
+test("settles a race only once even if completion is requested repeatedly", () => {
+  const settlement = { rewarded: false };
+  let payouts = 0;
+  assert.equal(settleRaceOnce(settlement, () => { payouts += 1; }), true);
+  assert.equal(settleRaceOnce(settlement, () => { payouts += 1; }), false);
+  assert.equal(payouts, 1);
+});
+
 test("keeps cars inside map bounds and stops them at the edge", () => {
   const car = { x: 70, z: -80, speed: 12 };
   assert.equal(constrainCarToMap(car, { bounds: 65 }), false);
@@ -135,6 +234,55 @@ test("keeps circuit centerlines free of crossing and overlapping sections", () =
         );
       }
     }
+  }
+});
+
+test("keeps widened road edges non-intersecting through tight corners", () => {
+  for (const track of Object.values(tracks)) {
+    const edges = getTrackEdges(track);
+    for (const edge of edges) {
+      assert.ok(edge.width > 0 && edge.width <= track.width);
+    }
+    for (const side of ["left", "right"]) {
+      for (let first = 0; first < edges.length; first += 1) {
+        for (let second = first + 2; second < edges.length; second += 1) {
+          if (first === 0 && second === edges.length - 1) continue;
+          assert.equal(
+            segmentsIntersect(
+              edges[first][side],
+              edges[(first + 1) % edges.length][side],
+              edges[second][side],
+              edges[(second + 1) % edges.length][side]
+            ),
+            false,
+            `${track.name} ${side} road edge overlaps at ${first} and ${second}`
+          );
+        }
+      }
+      for (let leftIndex = 0; leftIndex < edges.length; leftIndex += 1) {
+        for (let rightIndex = 0; rightIndex < edges.length; rightIndex += 1) {
+          const adjacent = Math.min(
+            (rightIndex - leftIndex + edges.length) % edges.length,
+            (leftIndex - rightIndex + edges.length) % edges.length
+          ) <= 1;
+          if (adjacent) continue;
+          assert.equal(
+            segmentsIntersect(
+              edges[leftIndex].left,
+              edges[(leftIndex + 1) % edges.length].left,
+              edges[rightIndex].right,
+              edges[(rightIndex + 1) % edges.length].right
+            ),
+            false,
+            `${track.name} inner and outer borders overlap around ${leftIndex} and ${rightIndex}`
+          );
+        }
+      }
+    }
+    assert.ok(
+      edges.filter((edge) => edge.width >= track.width * 0.8).length >= edges.length * 0.4,
+      `${track.name} should preserve most of its requested width`
+    );
   }
 });
 
@@ -183,13 +331,203 @@ test("serves the game, Three.js locally, and health status", async () => {
     fetch(`${baseUrl}/healthz`),
   ]);
   assert.equal(page.status, 200);
-  assert.match(await page.text(), /Race2Win/);
+  const html = await page.text();
+  assert.match(html, /Race2Win/);
+  assert.match(html, /race-minimap/);
+  assert.match(html, /store-screen/);
+  assert.match(html, /garage-screen/);
   assert.equal(three.status, 200);
   assert.match(await three.text(), /THREE/);
   assert.deepEqual(await health.json(), { ok: true });
   const tracks = await fetch(`${baseUrl}/tracks.json`);
   assert.equal(tracks.status, 200);
   assert.deepEqual(Object.keys(await tracks.json()).sort(), ["monaco", "monza"]);
+  const catalogResponse = await fetch(`${baseUrl}/catalog.json`);
+  assert.equal(catalogResponse.status, 200);
+  assert.deepEqual(await catalogResponse.json(), catalog);
+});
+
+test("registers and logs in with hashed passwords and persistent profiles", async () => {
+  const created = await createTestAccount();
+  assert.equal(created.profile.username, "PilotTest");
+  assert.equal(created.profile.coins, 500);
+  assert.deepEqual(created.profile.equipped, catalog.defaults);
+  assert.equal(created.profile.inventory.length, Object.values(catalog.defaults).length);
+  assert.equal("passwordHash" in created.profile, false);
+  assert.equal("salt" in created.profile, false);
+  assert.ok(created.token.length >= 40);
+
+  const storedContent = fs.readFileSync(path.join(dataDir, "accounts.json"), "utf8");
+  const stored = JSON.parse(storedContent)[0];
+  assert.notEqual(stored.passwordHash, "RacingPass123");
+  assert.ok(stored.passwordHash.length >= 128);
+  assert.equal(storedContent.includes("RacingPass123"), false);
+
+  const duplicate = await requestJson("/api/register", {
+    method: "POST",
+    body: { username: "pilottest", password: "RacingPass123" },
+  });
+  assert.equal(duplicate.response.status, 409);
+
+  const invalidLogin = await requestJson("/api/login", {
+    method: "POST",
+    body: { username: "PilotTest", password: "WrongPass123" },
+  });
+  assert.equal(invalidLogin.response.status, 401);
+  assert.equal(invalidLogin.data.error, "Usuario o contraseña incorrectos.");
+
+  await game.close();
+  game = createGameServer({ dataDir });
+  await new Promise((resolve) => game.httpServer.listen(0, "127.0.0.1", resolve));
+  baseUrl = `http://127.0.0.1:${game.httpServer.address().port}`;
+  const login = await requestJson("/api/login", {
+    method: "POST",
+    body: { username: "PilotTest", password: "RacingPass123" },
+  });
+  assert.equal(login.response.status, 200);
+  const profile = await requestJson("/api/me", { token: login.data.token });
+  assert.equal(profile.data.coins, 500);
+  assert.equal("passwordHash" in profile.data, false);
+
+  const logout = await requestJson("/api/logout", { method: "POST", token: login.data.token, body: {} });
+  assert.equal(logout.response.status, 204);
+  const loggedOut = await requestJson("/api/me", { token: login.data.token });
+  assert.equal(loggedOut.response.status, 401);
+});
+
+test("validates shop prices, purchases, and equipped inventory on the server", async () => {
+  const account = await createTestAccount();
+  const boughtPaint = await requestJson("/api/shop/buy", {
+    method: "POST",
+    token: account.token,
+    body: { itemId: "color-red", price: 1 },
+  });
+  assert.equal(boughtPaint.response.status, 200);
+  assert.equal(boughtPaint.data.coins, 320);
+  assert.ok(boughtPaint.data.inventory.includes("color-red"));
+
+  const boughtPattern = await requestJson("/api/shop/buy", {
+    method: "POST",
+    token: account.token,
+    body: { itemId: "camo-checker" },
+  });
+  assert.equal(boughtPattern.data.coins, 40);
+
+  const insufficient = await requestJson("/api/shop/buy", {
+    method: "POST",
+    token: account.token,
+    body: { itemId: "trail-neon", price: 0 },
+  });
+  assert.equal(insufficient.response.status, 400);
+  assert.match(insufficient.data.error, /suficientes/);
+
+  const equipped = await requestJson("/api/inventory/equip", {
+    method: "POST",
+    token: account.token,
+    body: { category: "color", itemId: "color-red" },
+  });
+  assert.equal(equipped.response.status, 200);
+  assert.equal(equipped.data.equipped.color, "color-red");
+
+  const notOwned = await requestJson("/api/inventory/equip", {
+    method: "POST",
+    token: account.token,
+    body: { category: "trail", itemId: "trail-neon" },
+  });
+  assert.equal(notOwned.response.status, 403);
+  const duplicatePurchase = await requestJson("/api/shop/buy", {
+    method: "POST",
+    token: account.token,
+    body: { itemId: "color-red" },
+  });
+  assert.equal(duplicatePurchase.response.status, 409);
+  const unauthenticated = await requestJson("/api/shop/buy", {
+    method: "POST",
+    body: { itemId: "color-red" },
+  });
+  assert.equal(unauthenticated.response.status, 401);
+});
+
+test("synchronizes account cosmetics and varied bot loadouts in race snapshots", async () => {
+  const account = await createTestAccount("CosmeticPilot");
+  const purchase = await requestJson("/api/shop/buy", {
+    method: "POST",
+    token: account.token,
+    body: { itemId: "color-red" },
+  });
+  assert.equal(purchase.response.status, 200);
+  const equip = await requestJson("/api/inventory/equip", {
+    method: "POST",
+    token: account.token,
+    body: { category: "color", itemId: "color-red" },
+  });
+  assert.equal(equip.response.status, 200);
+
+  const client = createClient(baseUrl, {
+    transports: ["websocket"],
+    reconnection: false,
+    auth: { token: account.token },
+  });
+  try {
+    await connect(client);
+    const statePromise = waitForRaceState(client, (state) => state.cars.length === 4);
+    const joined = await new Promise((resolve) => {
+      client.emit("joinRace", {
+        name: "Nombre falso",
+        maxPlayers: 4,
+        botsEnabled: true,
+        trackId: "monaco",
+        token: account.token,
+      }, resolve);
+    });
+    assert.equal(joined.ok, true);
+    const state = await statePromise;
+    const player = state.cars.find((car) => car.id === joined.id);
+    assert.equal(player.name, "CosmeticPilot");
+    assert.equal(player.color, "#f04d58");
+    assert.equal(player.cosmetics.color, "color-red");
+    assert.equal("accountUsername" in player, false);
+    assert.ok(state.cars.filter((car) => car.isBot).every((car) => car.cosmetics));
+    assert.ok(new Set(state.cars.filter((car) => car.isBot).map((car) => JSON.stringify(car.cosmetics))).size > 1);
+  } finally {
+    client.disconnect();
+  }
+});
+
+test("revokes an active race connection when its account logs out", async () => {
+  const account = await createTestAccount("LogoutPilot");
+  const client = createClient(baseUrl, {
+    transports: ["websocket"],
+    reconnection: false,
+    auth: { token: account.token },
+  });
+  try {
+    await connect(client);
+    const joinedState = waitForRaceState(client, (state) => state.cars.length === 1);
+    const disconnected = new Promise((resolve) => client.once("disconnect", resolve));
+    const joined = await new Promise((resolve) => {
+      client.emit("joinRace", {
+        name: "LogoutPilot",
+        maxPlayers: 1,
+        botsEnabled: false,
+        token: account.token,
+      }, resolve);
+    });
+    assert.equal(joined.ok, true);
+    await joinedState;
+
+    const logout = await requestJson("/api/logout", {
+      method: "POST",
+      token: account.token,
+      body: {},
+    });
+    assert.equal(logout.response.status, 204);
+    await disconnected;
+    const profile = await requestJson("/api/me", { token: account.token });
+    assert.equal(profile.response.status, 401);
+  } finally {
+    client.disconnect();
+  }
 });
 
 test("lets a driver join with bots and start a shared race", async () => {
@@ -270,6 +608,36 @@ test("lets a driver reverse by holding the brake from a stop", { timeout: 7000 }
     assert.ok(Math.hypot(reversingCar.x - initialCar.x, reversingCar.z - initialCar.z) > 0.1);
   } finally {
     client.disconnect();
+  }
+});
+
+test("places all eight starting cars inside the adapted road widths", async () => {
+  for (const trackId of ["monaco", "monza"]) {
+    const client = createClient(baseUrl, { transports: ["websocket"], reconnection: false });
+    try {
+      await connect(client);
+      const statePromise = waitForRaceState(client, (state) => state.cars.length === 8);
+      const joined = await new Promise((resolve) => {
+        client.emit("joinRace", {
+          name: "Parrilla",
+          maxPlayers: 8,
+          botsEnabled: true,
+          trackId,
+        }, resolve);
+      });
+      assert.equal(joined.ok, true);
+      const state = await statePromise;
+      assert.equal(state.track.width, trackId === "monaco" ? 11.5 : 14.5);
+      for (const car of state.cars) {
+        const offset = getTrackOffset(state.track, car);
+        assert.ok(offset.distance <= offset.width / 2 - 1.12 + 0.02, `${trackId}: ${car.name} is outside the road`);
+        assert.ok(Math.abs(car.x) <= state.track.bounds);
+        assert.ok(Math.abs(car.z) <= state.track.bounds);
+      }
+    } finally {
+      client.disconnect();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 40));
   }
 });
 

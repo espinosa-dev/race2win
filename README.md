@@ -28,15 +28,18 @@ La primera persona que entra crea la sala, elige el circuito, el aforo (hasta oc
 
 ## MVP actual
 
-- Circuitos 3D inspirados en Monaco y Monza, de tres vueltas.
+- Circuitos 3D inspirados en Monaco y Monza, con anchura adaptativa en curvas y minimapa en directo.
 - Bots y multijugador en red local.
 - Límite físico del mapa y de la simulación.
 - Vallado alrededor del circuito y colisiones entre coches.
 - Posiciones en directo, cronómetro, tiempos de llegada y diferencias.
 - Detección de vuelta y meta al cruzar la línea en el sentido correcto.
-- Coches y texturas generados para este proyecto.
+- Cuentas locales con contraseñas derivadas mediante scrypt, sesiones aleatorias, 500 RC iniciales y persistencia en `data/accounts.json`.
+- Tienda e inventario validados por el servidor, con puntos y RC por carrera.
+- Catálogo compartido en `public/catalog.json` y cosméticos visibles en coches de jugadores y bots.
+- Escena Three.js con sombras, pianos, parrilla, meta, decoración de circuito y coches personalizables.
 
-El multijugador por Internet, más circuitos, selección de vehículos y una física más avanzada quedan para futuras iteraciones.
+Las cuentas y sesiones están diseñadas para el servidor LAN local. Las contraseñas se almacenan derivadas con salt; la comunicación HTTP de una LAN no cifra el tráfico, por lo que redes no confiables requieren HTTPS antes de exponer el servidor.
 
 ## Pruebas
 
@@ -47,5 +50,8 @@ npm test
 ## Estructura
 
 - `server.js`: servidor, simulación de carrera y comunicación en tiempo real.
+- `storage.js`: cuentas, sesiones y persistencia local.
 - `public/`: interfaz y escena 3D del juego.
+- `public/catalog.json`: catálogo compartido de cosméticos y artículos.
+- `public/track-geometry.js`: bordes de pista seguros y compartidos entre servidor, cliente y pruebas.
 - `tests/`: pruebas del servidor.

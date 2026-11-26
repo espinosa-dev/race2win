@@ -14,6 +14,29 @@
           <span class="brand-mark" aria-hidden="true">R</span>
           <span>RACE<b>2WIN</b></span>
         </a>
+        <nav class="primary-nav" id="main-nav" aria-label="Navegación principal">
+          <button class="nav-button is-active" type="button" data-screen="join-screen">Jugar</button>
+          <button class="nav-button" type="button" data-screen="store-screen">Tienda</button>
+          <button class="nav-button" type="button" data-screen="garage-screen">Inventario / Garaje</button>
+        </nav>
+        <div class="account-area">
+          <span id="account-balance" class="account-balance is-hidden">500 RC</span>
+          <details class="account-menu">
+            <summary id="account-summary">Cuenta · Iniciar sesión</summary>
+            <form id="account-form" class="account-form">
+              <label for="account-username">Usuario</label>
+              <input id="account-username" name="username" maxlength="16" autocomplete="username" required>
+              <label for="account-password">Contraseña</label>
+              <input id="account-password" name="password" type="password" minlength="8" maxlength="128" autocomplete="current-password" required>
+              <div class="account-actions">
+                <button id="login-button" type="button">Iniciar sesión</button>
+                <button id="register-button" type="button">Crear cuenta</button>
+              </div>
+              <button id="logout-button" class="logout-button is-hidden" type="button">Cerrar sesión</button>
+              <p id="account-error" role="alert"></p>
+            </form>
+          </details>
+        </div>
         <div class="top-status"><span class="status-dot"></span><span id="connection-label">SERVIDOR LOCAL</span></div>
       </header>
 
@@ -61,6 +84,7 @@
 
       <section id="race-screen" class="race-screen is-hidden" aria-label="Carrera">
         <div id="game-view" class="game-view"></div>
+        <canvas id="race-minimap" class="race-minimap" width="160" height="160" aria-label="Minimapa del circuito"></canvas>
         <div class="hud hud-top-left">
           <div class="hud-label">VUELTA</div>
           <div class="lap-value"><span id="lap-number">1</span><small> / 3</small></div>
@@ -74,6 +98,7 @@
           <div class="place-value"><span id="place-number">—</span><small id="place-suffix">º</small></div>
         </div>
         <div class="race-message" id="race-message" aria-live="polite"></div>
+        <div id="reward-summary" class="reward-summary is-hidden" aria-live="polite"></div>
         <aside class="leaderboard">
           <div class="leaderboard-heading"><span>CLASIFICACIÓN</span><span id="race-state-label">SALA</span></div>
           <ol id="standings-list"></ol>
@@ -84,6 +109,46 @@
           <button id="start-button" class="primary-button is-hidden" type="button">EMPEZAR CARRERA <span aria-hidden="true">→</span></button>
           <button id="restart-button" class="primary-button is-hidden" type="button">OTRA CARRERA <span aria-hidden="true">↻</span></button>
           <button id="leave-button" class="quiet-button" type="button">SALIR</button>
+        </div>
+      </section>
+
+      <section id="store-screen" class="content-screen is-hidden" aria-labelledby="store-title">
+        <div class="page-heading">
+          <p class="eyebrow">PERSONALIZA TU COCHE</p>
+          <h2 id="store-title">Tienda <span>Race2Win</span></h2>
+          <p>Desbloquea estilos y pruébalos en el visor antes de comprarlos.</p>
+        </div>
+        <div class="customizer-grid">
+          <div class="customizer-panel">
+            <div id="store-categories" class="category-tabs" role="tablist" aria-label="Categorías de tienda"></div>
+            <div id="store-items" class="catalog-items"></div>
+            <p id="store-message" class="screen-notice" aria-live="polite"></p>
+          </div>
+          <div class="preview-card">
+            <div class="preview-heading"><span>VISTA PREVIA 3D</span><small>Arrastra para girar</small></div>
+            <div id="store-preview" class="car-preview"></div>
+            <p id="store-preview-label" class="preview-label">Selecciona un artículo</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="garage-screen" class="content-screen is-hidden" aria-labelledby="garage-title">
+        <div class="page-heading">
+          <p class="eyebrow">TU COLECCIÓN</p>
+          <h2 id="garage-title">Inventario <span>/ Garaje</span></h2>
+          <p>Equipa tus artículos desbloqueados y prepara tu coche para la próxima carrera.</p>
+        </div>
+        <div class="customizer-grid">
+          <div class="customizer-panel">
+            <div id="garage-categories" class="category-tabs" role="tablist" aria-label="Categorías del garaje"></div>
+            <div id="garage-items" class="catalog-items"></div>
+            <p id="garage-message" class="screen-notice" aria-live="polite"></p>
+          </div>
+          <div class="preview-card">
+            <div class="preview-heading"><span>VISTA PREVIA 3D</span><small>Arrastra para girar</small></div>
+            <div id="garage-preview" class="car-preview"></div>
+            <p id="garage-preview-label" class="preview-label">Tu coche equipado</p>
+          </div>
         </div>
       </section>
 

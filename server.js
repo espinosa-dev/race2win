@@ -4,6 +4,8 @@ const fs = require("node:fs");
 const express = require("express");
 const http = require("node:http");
 const { Server } = require("socket.io");
+const { createStorage } = require("./storage");
+const { getTrackEdges } = require("./public/track-geometry");
 
 const PORT = Number(process.env.PORT) || 3000;
 const TOTAL_LAPS = 3;
@@ -17,12 +19,18 @@ const DEFAULT_TRACK_ID = "monaco";
 const BOT_NAMES = ["Chispa", "Turbo", "Pistón", "Rayo", "Choco", "Nube", "Trueno"];
 const CAR_COLORS = ["#30d6c1", "#ffb94b", "#ff6978", "#8a7cff", "#d9ed63", "#54a9ff", "#ff8ccc", "#f7f3e8"];
 const TRACKS = JSON.parse(fs.readFileSync(path.join(__dirname, "public", "tracks.json"), "utf8"));
+const CATALOG = JSON.parse(fs.readFileSync(path.join(__dirname, "public", "catalog.json"), "utf8"));
+const CATALOG_BY_ID = new Map(CATALOG.items.map((item) => [item.id, item]));
+const COSMETIC_CATEGORIES = ["color", "camo", "wheels", "helmet", "spoiler", "trail"];
+const BASE_RACE_POINTS = [100, 70, 50, 35, 25, 20, 15, 10];
+const BASE_RACE_COINS = [120, 85, 60, 45, 35, 30, 25, 20];
 
 function prepareTrack(track) {
   const points = [
     ...track.points.slice(track.startIndex),
     ...track.points.slice(0, track.startIndex),
   ];
+  const edgeProfile = getTrackEdges({ ...track, points });
   const segments = points.map((point, index) => {
     const next = points[(index + 1) % points.length];
     const dx = next[0] - point[0];
@@ -33,6 +41,8 @@ function prepareTrack(track) {
       dx,
       dz,
       length: Math.hypot(dx, dz),
+      widthStart: edgeProfile[index].width,
+      widthEnd: edgeProfile[(index + 1) % points.length].width,
     };
   });
   let length = 0;
@@ -105,7 +115,8 @@ function constrainCarToMap(car, track) {
 
 function constrainCarToTrack(car, track) {
   const projection = projectToTrack(track, car.x, car.z);
-  const maxOffset = Math.max(0, track.width / 2 - CAR_COLLISION_RADIUS * 0.7);
+  const trackWidth = Number.isFinite(projection.width) ? projection.width : track.width;
+  const maxOffset = Math.max(0, trackWidth / 2 - CAR_COLLISION_RADIUS * 0.7);
   const distance = Math.sqrt(projection.distanceSquared);
   if (distance > maxOffset) {
     const scale = maxOffset / distance;
@@ -173,12 +184,18 @@ function getTrackPosition(track, distance) {
     tangentX: segment.dx / segment.length,
     tangentZ: segment.dz / segment.length,
     distance: wrappedDistance,
+    segmentIndex: track.segments.indexOf(segment),
+    fraction,
+    width: Number.isFinite(segment.widthStart)
+      ? segment.widthStart + (segment.widthEnd - segment.widthStart) * fraction
+      : track.width,
   };
 }
 
 function projectToTrack(track, x, z) {
   let nearest = null;
-  for (const segment of track.segments) {
+  for (let segmentIndex = 0; segmentIndex < track.segments.length; segmentIndex += 1) {
+    const segment = track.segments[segmentIndex];
     const fraction = clamp(
       ((x - segment.x) * segment.dx + (z - segment.z) * segment.dz) / (segment.length ** 2),
       0,
@@ -193,16 +210,68 @@ function projectToTrack(track, x, z) {
         distanceSquared,
         x: projectedX,
         z: projectedZ,
+        segmentIndex,
+        fraction,
+        width: Number.isFinite(segment.widthStart)
+          ? segment.widthStart + (segment.widthEnd - segment.widthStart) * fraction
+          : track.width,
       };
     }
   }
   return nearest;
 }
 
-function createGameServer() {
+function calculateRaceRewards({
+  place,
+  entrantCount,
+  lapsCompleted,
+  totalLaps = TOTAL_LAPS,
+  bestLapMs = null,
+  fastestLapMs = null,
+}) {
+  const rivals = Math.max(0, entrantCount - 1);
+  const multiplier = Math.min(1, rivals / 3);
+  const positionIndex = clamp(place - 1, 0, BASE_RACE_POINTS.length - 1);
+  const basePoints = Math.floor(BASE_RACE_POINTS[positionIndex] * multiplier);
+  const baseCoins = Math.floor(BASE_RACE_COINS[positionIndex] * multiplier);
+  const completedBonus = lapsCompleted >= totalLaps;
+  const fastestLapBonus = Number.isFinite(bestLapMs) && bestLapMs === fastestLapMs;
+  const completionPoints = completedBonus ? Math.floor(25 * multiplier) : 0;
+  const completionCoins = completedBonus ? Math.floor(25 * multiplier) : 0;
+  const fastestLapPoints = fastestLapBonus ? Math.floor(35 * multiplier) : 0;
+  const fastestLapCoins = fastestLapBonus ? Math.floor(30 * multiplier) : 0;
+  return {
+    place,
+    rivals,
+    basePoints,
+    completionPoints,
+    fastestLapPoints,
+    points: basePoints + completionPoints + fastestLapPoints,
+    baseCoins,
+    completionCoins,
+    fastestLapCoins,
+    coins: baseCoins + completionCoins + fastestLapCoins,
+    completedBonus,
+    fastestLapBonus,
+  };
+}
+
+function settleRaceOnce(settlement, award) {
+  if (settlement.rewarded) return false;
+  settlement.rewarded = true;
+  award();
+  return true;
+}
+
+function createGameServer(options = {}) {
   const app = express();
   const httpServer = http.createServer(app);
   const io = new Server(httpServer);
+  const storage = createStorage(
+    options.dataDir || path.join(__dirname, "data"),
+    CATALOG
+  );
+  const loginAttempts = new Map();
   const cars = new Map();
   let hostId = null;
   let phase = "lobby";
@@ -210,9 +279,12 @@ function createGameServer() {
   let nextBotId = 1;
   let countdownEndsAt = 0;
   let raceStartedAt = 0;
+  let raceEntrantCount = 0;
+  const raceSettlement = { rewarded: false };
   let lastTick = Date.now();
   let lastBroadcastAt = lastTick;
 
+  app.use(express.json({ limit: "16kb" }));
   app.use(express.static(path.join(__dirname, "public")));
   app.get("/vendor/three.module.js", (req, res) => {
     res.sendFile(path.join(__dirname, "node_modules", "three", "build", "three.module.js"));
@@ -225,19 +297,140 @@ function createGameServer() {
   });
   app.get("/healthz", (req, res) => res.json({ ok: true }));
 
-  function makeCar({ id, name, color, isBot = false }) {
+  function getBearerToken(req) {
+    const [scheme, token] = String(req.get("authorization") || "").split(" ");
+    return scheme?.toLowerCase() === "bearer" ? token : null;
+  }
+
+  function requireAccount(req, res) {
+    const account = storage.getSession(getBearerToken(req));
+    if (!account) {
+      res.status(401).json({ error: "Inicia sesión para continuar." });
+      return null;
+    }
+    return account;
+  }
+
+  function asyncRoute(handler) {
+    return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
+  }
+
+  app.post("/api/register", asyncRoute(async (req, res) => {
+    const result = await storage.register(req.body?.username, req.body?.password);
+    res.status(201).json(result);
+  }));
+  app.post("/api/login", asyncRoute(async (req, res) => {
+    const clientIp = req.ip || req.socket.remoteAddress || "unknown";
+    const now = Date.now();
+    const attempt = loginAttempts.get(clientIp);
+    const currentAttempt = !attempt || now - attempt.windowStartedAt >= 60_000
+      ? { count: 0, windowStartedAt: now }
+      : attempt;
+    if (currentAttempt.count >= 8) {
+      res.status(429).json({ error: "Demasiados intentos. Espera un minuto antes de volver a intentarlo." });
+      return;
+    }
+    try {
+      const result = await storage.login(req.body?.username, req.body?.password);
+      loginAttempts.delete(clientIp);
+      res.json(result);
+    } catch (error) {
+      if (error.status === 401) {
+        currentAttempt.count += 1;
+        loginAttempts.set(clientIp, currentAttempt);
+      }
+      throw error;
+    }
+  }));
+  app.post("/api/logout", (req, res) => {
+    const token = getBearerToken(req);
+    const account = storage.getSession(token);
+    storage.logout(token);
+    if (account) {
+      for (const [socketId, car] of cars) {
+        if (car.accountToken !== token) continue;
+        io.sockets.sockets.get(socketId)?.disconnect(true);
+      }
+    }
+    res.status(204).end();
+  });
+  app.get("/api/me", (req, res) => {
+    const account = requireAccount(req, res);
+    if (account) res.json(storage.publicProfile(account));
+  });
+  app.post("/api/shop/buy", (req, res) => {
+    const account = requireAccount(req, res);
+    if (!account) return;
+    const item = CATALOG_BY_ID.get(String(req.body?.itemId || ""));
+    if (!item) {
+      res.status(404).json({ error: "El artículo no existe." });
+      return;
+    }
+    const result = storage.buyItem(account.username, item);
+    res.status(result.status || 200).json(result.ok ? result.profile : { error: result.error });
+  });
+  app.post("/api/inventory/equip", (req, res) => {
+    const account = requireAccount(req, res);
+    if (!account) return;
+    const category = String(req.body?.category || "");
+    const item = CATALOG_BY_ID.get(String(req.body?.itemId || ""));
+    if (!COSMETIC_CATEGORIES.includes(category) || !item || item.category !== category) {
+      res.status(400).json({ error: "La categoría o el artículo no son válidos." });
+      return;
+    }
+    const result = storage.equipItem(account.username, category, item);
+    res.status(result.status || 200).json(result.ok ? result.profile : { error: result.error });
+  });
+  app.use((error, req, res, next) => {
+    if (res.headersSent) {
+      next(error);
+      return;
+    }
+    if (!error.status || error.status >= 500) console.error("Error en el endpoint HTTP.", error);
+    res.status(error.status || 500).json({
+      error: error.status ? error.message : "No se pudo completar la operación.",
+    });
+  });
+
+  function normalizeCosmetics(cosmetics) {
+    return Object.fromEntries(COSMETIC_CATEGORIES.map((category) => {
+      const item = CATALOG_BY_ID.get(cosmetics?.[category]);
+      return [category, item?.category === category ? item.id : CATALOG.defaults[category]];
+    }));
+  }
+
+  function randomBotCosmetics(seed) {
+    return Object.fromEntries(COSMETIC_CATEGORIES.map((category, categoryIndex) => {
+      const options = CATALOG.items.filter((item) => item.category === category);
+      return [category, options[(seed + categoryIndex * 3) % options.length].id];
+    }));
+  }
+
+  function makeCar({ id, name, color, isBot = false, cosmetics, accountUsername, accountToken }) {
     const track = PREPARED_TRACKS[raceSettings.trackId];
     const gridIndex = cars.size;
     const startDistance = 4 + Math.floor(gridIndex / 2) * 4.5;
     const gridPosition = getTrackPosition(track, track.length - startDistance);
-    const laneOffset = (gridIndex % 2 === 0 ? -1 : 1) * Math.min(track.width * 0.25, 2.2);
+    const maxLaneOffset = Math.max(0, gridPosition.width / 2 - CAR_COLLISION_RADIUS * 0.7);
+    const laneOffset = (gridIndex % 2 === 0 ? -1 : 1)
+      * Math.min(gridPosition.width * 0.25, 2.2, maxLaneOffset);
     const normalX = -gridPosition.tangentZ;
     const normalZ = gridPosition.tangentX;
+    const appearance = normalizeCosmetics(cosmetics || {});
+    if (!cosmetics && color) {
+      const matchingColor = CATALOG.items.find((item) => item.category === "color" && item.color === color);
+      if (matchingColor) appearance.color = matchingColor.id;
+    }
+    if (isBot && !cosmetics) Object.assign(appearance, randomBotCosmetics(gridIndex));
+    const selectedColor = CATALOG_BY_ID.get(appearance.color);
     return {
       id,
       name,
-      color,
+      color: accountUsername || isBot ? selectedColor.color : color || selectedColor.color,
       isBot,
+      accountUsername: accountUsername || null,
+      accountToken: accountToken || null,
+      cosmetics: appearance,
       x: gridPosition.x + normalX * laneOffset,
       z: gridPosition.z + normalZ * laneOffset,
       yaw: Math.atan2(-gridPosition.tangentX, -gridPosition.tangentZ),
@@ -248,7 +441,11 @@ function createGameServer() {
       progress: 0,
       lapsCompleted: 0,
       finishProgress: TOTAL_LAPS * track.length + startDistance,
+      lapStartedAt: 0,
+      lapTimesMs: [],
+      bestLapMs: null,
       finishedAt: null,
+      reward: null,
     };
   }
 
@@ -291,6 +488,37 @@ function createGameServer() {
     });
   }
 
+  function settleRace(now) {
+    settleRaceOnce(raceSettlement, () => {
+      phase = "finished";
+      const standings = getStandings();
+      const lapTimes = standings.flatMap((car) => car.lapTimesMs);
+      const fastestLapMs = lapTimes.length ? Math.min(...lapTimes) : null;
+      standings.forEach((car, index) => {
+        if (car.isBot) return;
+        car.reward = calculateRaceRewards({
+          place: index + 1,
+          entrantCount: raceEntrantCount,
+          lapsCompleted: car.lapsCompleted,
+          bestLapMs: car.bestLapMs,
+          fastestLapMs,
+        });
+        if (car.accountUsername) {
+          try {
+            storage.recordRace(car.accountUsername, {
+              ...car.reward,
+              bestLapMs: car.bestLapMs,
+            });
+          } catch (error) {
+            console.error(`No se pudo guardar la recompensa de ${car.accountUsername}.`, error);
+            car.reward.persistenceError = true;
+          }
+        }
+      });
+      if (raceStartedAt === 0) raceStartedAt = now;
+    });
+  }
+
   function createSnapshot(now = Date.now()) {
     const standings = getStandings();
     const finishTiming = getFinishTiming(cars.values(), raceStartedAt);
@@ -315,14 +543,19 @@ function createGameServer() {
         id: car.id,
         name: car.name,
         color: car.color,
+        cosmetics: { ...car.cosmetics },
         isBot: car.isBot,
         x: car.x,
         z: car.z,
         yaw: car.yaw,
         speed: car.speed,
+        steering: car.steering,
+        accelerating: car.input.throttle > 0,
         lap: Math.min(TOTAL_LAPS, car.lapsCompleted + 1),
         progress: car.progress,
         finished: car.finishedAt !== null,
+        bestLapMs: car.bestLapMs,
+        reward: car.reward ? { ...car.reward } : null,
         ...(finishTiming.get(car.id) || {
           isFirstFinisher: false,
           finishTimeMs: null,
@@ -353,7 +586,7 @@ function createGameServer() {
       };
     }
 
-    const onTrack = distanceFromTrack <= track.width * 0.75;
+    const onTrack = distanceFromTrack <= projection.width * 0.75;
     const maxSpeed = onTrack ? 18 : 8;
     const acceleration = onTrack ? 11 : 6;
     if (car.input.brake > 0) {
@@ -403,6 +636,7 @@ function createGameServer() {
     if (phase === "countdown" && now >= countdownEndsAt) {
       phase = "racing";
       raceStartedAt = now;
+      for (const car of cars.values()) car.lapStartedAt = now;
       dt = 0;
     }
     if (phase === "racing") {
@@ -410,10 +644,20 @@ function createGameServer() {
         if (car.finishedAt !== null) continue;
         const previousProgress = car.progress;
         updateCar(car, dt);
-        car.lapsCompleted = Math.max(
-          car.lapsCompleted,
-          Math.min(TOTAL_LAPS, Math.floor((car.progress + 1e-6) / PREPARED_TRACKS[raceSettings.trackId].length))
+        const trackLength = PREPARED_TRACKS[raceSettings.trackId].length;
+        const completedLaps = Math.min(
+          TOTAL_LAPS,
+          Math.floor((car.progress + 1e-6) / trackLength)
         );
+        if (completedLaps > car.lapsCompleted) {
+          const crossingProgress = (car.lapsCompleted + 1) * trackLength;
+          const crossingAt = getCrossingTimeMs(previousProgress, car.progress, crossingProgress, now, dt);
+          const lapTimeMs = Math.max(0, crossingAt - car.lapStartedAt);
+          car.lapTimesMs.push(lapTimeMs);
+          car.bestLapMs = car.bestLapMs === null ? lapTimeMs : Math.min(car.bestLapMs, lapTimeMs);
+          car.lapStartedAt = crossingAt;
+          car.lapsCompleted = completedLaps;
+        }
         if (car.progress >= car.finishProgress) {
           car.finishedAt = getCrossingTimeMs(previousProgress, car.progress, car.finishProgress, now, dt);
         }
@@ -425,15 +669,37 @@ function createGameServer() {
         const projection = constrainCarToTrack(car, PREPARED_TRACKS[raceSettings.trackId]);
         car.lastTrackDistance = projection.distance;
       }
-      if (areHumanDriversFinished(cars.values())) phase = "finished";
+      if (areHumanDriversFinished(cars.values())) settleRace(now);
     }
     if (now - lastBroadcastAt >= 100) broadcastState(now);
   }, 50);
 
+  io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (!token || storage.getSession(token)) {
+      next();
+      return;
+    }
+    next(new Error("La sesión de la cuenta no es válida."));
+  });
+
   io.on("connection", (socket) => {
     socket.on("joinRace", (payload = {}, acknowledge = () => {}) => {
+      const token = payload.token || socket.handshake.auth?.token;
+      const account = token ? storage.getSession(token) : null;
+      if (token && !account) {
+        acknowledge({ ok: false, error: "La sesión de la cuenta ha caducado. Inicia sesión de nuevo." });
+        return;
+      }
       if (cars.has(socket.id)) {
         acknowledge({ ok: true, id: socket.id });
+        return;
+      }
+      if (
+        account
+        && [...cars.values()].some((car) => car.accountUsername?.toLowerCase() === account.username.toLowerCase())
+      ) {
+        acknowledge({ ok: false, error: "Esta cuenta ya está conectada a la sala." });
         return;
       }
       if (phase !== "lobby") {
@@ -446,7 +712,7 @@ function createGameServer() {
         return;
       }
 
-      const name = String(payload.name || "Piloto").trim().slice(0, 16) || "Piloto";
+      const name = account?.username || String(payload.name || "Piloto").trim().slice(0, 16) || "Piloto";
       if (!hostId) {
         const hasNewSettings = payload.maxPlayers !== undefined || payload.botsEnabled !== undefined;
         const legacyBotCount = clamp(Math.round(Number(payload.botCount) || 0), 0, MAX_PLAYERS - 1);
@@ -477,6 +743,9 @@ function createGameServer() {
         id: socket.id,
         name,
         color: CAR_COLORS[humanCount % CAR_COLORS.length],
+        cosmetics: account?.equipped,
+        accountUsername: account?.username,
+        accountToken: token,
       });
       cars.set(socket.id, human);
       if (!hostId) {
@@ -502,6 +771,15 @@ function createGameServer() {
       phase = "countdown";
       countdownEndsAt = Date.now() + 3200;
       raceStartedAt = 0;
+      raceEntrantCount = cars.size;
+      raceSettlement.rewarded = false;
+      for (const car of cars.values()) {
+        car.lapsCompleted = 0;
+        car.lapStartedAt = 0;
+        car.lapTimesMs = [];
+        car.bestLapMs = null;
+        car.reward = null;
+      }
       broadcastState();
     });
 
@@ -516,6 +794,8 @@ function createGameServer() {
       phase = "lobby";
       countdownEndsAt = 0;
       raceStartedAt = 0;
+      raceEntrantCount = 0;
+      raceSettlement.rewarded = false;
       broadcastState();
     });
 
@@ -530,6 +810,8 @@ function createGameServer() {
         nextBotId = 1;
         countdownEndsAt = 0;
         raceStartedAt = 0;
+        raceEntrantCount = 0;
+        raceSettlement.rewarded = false;
       } else if (hostId === socket.id) {
         hostId = remainingHumans[0].id;
         if (phase === "lobby") {
@@ -565,6 +847,8 @@ if (require.main === module) {
 module.exports = {
   createGameServer,
   areHumanDriversFinished,
+  calculateRaceRewards,
+  settleRaceOnce,
   constrainCarToMap,
   constrainCarToTrack,
   getCrossingTimeMs,
