@@ -67,16 +67,6 @@
             <section class="track-picker" aria-label="Selecciona un circuito">
               <div class="section-heading"><span>02 <b>·</b> SELECCIONA CIRCUITO</span><span id="track-selection-status" class="section-side-note">MONACO · TÉCNICO</span></div>
               <div id="track-cards" class="track-cards">
-                <button class="track-card is-selected" type="button" data-track-id="monaco" aria-pressed="true">
-                  <span class="track-card-top"><b>MONACO</b><small>01 / STREET</small></span>
-                  <svg class="track-silhouette" data-track-route="monaco" viewBox="0 0 140 70" aria-hidden="true"></svg>
-                  <span class="track-card-meta"><b>3 VUELTAS</b><span>TÉCNICO <i>·</i> 11.5 m</span></span>
-                </button>
-                <button class="track-card" type="button" data-track-id="monza" aria-pressed="false">
-                  <span class="track-card-top"><b>MONZA</b><small>02 / SPEED</small></span>
-                  <svg class="track-silhouette" data-track-route="monza" viewBox="0 0 140 70" aria-hidden="true"></svg>
-                  <span class="track-card-meta"><b>3 VUELTAS</b><span>RÁPIDO <i>·</i> 14.5 m</span></span>
-                </button>
               </div>
             </section>
           </div>
@@ -96,6 +86,27 @@
               <div class="card-topline"><span>03 · CONFIGURA LA SALA</span><span class="card-number">GRID</span></div>
               <label for="driver-name">NOMBRE EN CARRERA</label>
               <input id="driver-name" name="name" maxlength="16" placeholder="Tu apodo" autocomplete="nickname" value="Piloto" required>
+              <p id="pilot-name-note" class="pilot-name-note">Como invitado no se guardan puntos ni RaceCoins.</p>
+              <div class="race-options">
+                <div class="option-block">
+                  <span class="option-label">MODO</span>
+                  <input id="race-mode" name="mode" type="hidden" value="race">
+                  <div class="option-pills" role="group" aria-label="Modo de juego">
+                    <button class="option-pill is-selected" type="button" data-race-mode="race" aria-pressed="true">CARRERA</button>
+                    <button class="option-pill" type="button" data-race-mode="timeTrial" aria-pressed="false">CONTRARRELOJ</button>
+                  </div>
+                </div>
+                <div class="option-block">
+                  <span class="option-label">VUELTAS</span>
+                  <input id="race-laps" name="laps" type="hidden" value="3">
+                  <div class="option-pills lap-pills" role="group" aria-label="Número de vueltas">
+                    <button class="option-pill" type="button" data-laps="1" aria-pressed="false">1</button>
+                    <button class="option-pill is-selected" type="button" data-laps="3" aria-pressed="true">3</button>
+                    <button class="option-pill" type="button" data-laps="5" aria-pressed="false">5</button>
+                    <button class="option-pill" type="button" data-laps="7" aria-pressed="false">7</button>
+                  </div>
+                </div>
+              </div>
               <input id="track-select" name="trackId" type="hidden" value="monaco">
               <input id="max-players" name="maxPlayers" type="hidden" value="4">
               <div class="participants-heading"><span>PARTICIPANTES</span><b><span id="participant-count">4</span> / 8</b></div>
@@ -115,6 +126,13 @@
                 <span>COMPLETAR PLAZAS CON BOTS</span>
                 <small>+</small>
               </label>
+              <div class="difficulty-row" role="group" aria-label="Dificultad de los bots">
+                <span>DIFICULTAD IA</span>
+                <input id="bot-difficulty" name="difficulty" type="hidden" value="normal">
+                <button class="difficulty-pill" type="button" data-difficulty="easy" aria-pressed="false">FÁCIL</button>
+                <button class="difficulty-pill is-selected" type="button" data-difficulty="normal" aria-pressed="true">NORMAL</button>
+                <button class="difficulty-pill" type="button" data-difficulty="hard" aria-pressed="false">DIFÍCIL</button>
+              </div>
               <button class="primary-button" type="submit">ENTRAR EN PISTA <span aria-hidden="true">→</span></button>
               <p class="form-error" id="join-error" role="alert"></p>
               <div class="lan-invite">
@@ -136,7 +154,9 @@
         <canvas id="race-minimap" class="race-minimap" width="160" height="160" aria-label="Minimapa del circuito"></canvas>
         <div class="hud hud-top-left">
           <div class="hud-label">VUELTA</div>
-          <div class="lap-value"><span id="lap-number">1</span><small> / 3</small></div>
+          <div class="lap-value"><span id="lap-number">1</span><small id="lap-total"> / 3</small></div>
+          <div class="telemetry-line">ÚLTIMA <b id="last-lap-value">—</b></div>
+          <div class="telemetry-line">MEJOR <b id="best-lap-value">—</b></div>
         </div>
         <div class="hud hud-clock">
           <div class="hud-label">TIEMPO</div>
@@ -147,6 +167,9 @@
           <div class="place-value"><span id="place-number">—</span><small id="place-suffix">º</small></div>
         </div>
         <div class="race-message" id="race-message" aria-live="polite"></div>
+        <div id="car-labels" class="car-labels" aria-hidden="true"></div>
+        <div id="drs-indicator" class="drs-indicator">DRS</div>
+        <div id="race-toast" class="race-toast" aria-live="polite"></div>
         <div id="reward-summary" class="reward-summary is-hidden" aria-live="polite"></div>
         <aside class="leaderboard">
           <div class="leaderboard-heading"><span>CLASIFICACIÓN</span><span id="race-state-label">SALA</span></div>
@@ -155,10 +178,36 @@
         <div class="speedometer"><span id="speed-value">0</span><small>KM/H</small></div>
         <div class="controls-hint">W / ↑ ACELERAR <i>·</i> S / ↓ FRENAR · PARADO: MANTENER PARA RETROCEDER <i>·</i> A D / ← → GIRAR</div>
         <div class="race-actions">
+          <button id="ready-button" class="quiet-button is-hidden" type="button">MARCAR LISTO</button>
           <button id="start-button" class="primary-button is-hidden" type="button">EMPEZAR CARRERA <span aria-hidden="true">→</span></button>
           <button id="restart-button" class="primary-button is-hidden" type="button">OTRA CARRERA <span aria-hidden="true">↻</span></button>
           <button id="leave-button" class="quiet-button" type="button">SALIR</button>
         </div>
+        <div class="race-utilities">
+          <button id="camera-button" type="button">CÁMARA <kbd>C</kbd></button>
+          <button id="pause-button" type="button">PAUSA <kbd>ESC</kbd></button>
+        </div>
+        <div class="touch-controls" aria-label="Controles táctiles">
+          <div class="touch-steering">
+            <button type="button" data-control="left" aria-label="Girar a la izquierda">◀</button>
+            <button type="button" data-control="right" aria-label="Girar a la derecha">▶</button>
+          </div>
+          <div class="touch-pedals">
+            <button type="button" data-control="throttle">ACELERAR</button>
+            <button type="button" data-control="brake">FRENAR / REVERSA</button>
+          </div>
+        </div>
+        <section id="pause-overlay" class="pause-overlay is-hidden" aria-label="Menú de pausa">
+          <div class="pause-card">
+            <p class="eyebrow">RACE CONTROL</p>
+            <h2>PAUSA</h2>
+            <p id="pause-message">Carrera pausada.</p>
+            <button id="resume-button" class="primary-button" type="button">REANUDAR</button>
+            <button id="restart-paused-button" class="quiet-button" type="button">REINICIAR CARRERA</button>
+            <button id="pause-camera-button" class="quiet-button" type="button">CAMBIAR CÁMARA</button>
+            <button id="pause-leave-button" class="quiet-button" type="button">SALIR AL MENÚ</button>
+          </div>
+        </section>
       </section>
 
       <section id="store-screen" class="content-screen is-hidden" aria-labelledby="store-title">
@@ -199,6 +248,11 @@
             <p id="garage-preview-label" class="preview-label">Tu coche equipado</p>
           </div>
         </div>
+        <section class="achievement-panel" aria-label="Logros y perfil">
+          <div class="preview-heading"><span>LOGROS / PERFIL</span><small>Progreso vinculado a tu cuenta</small></div>
+          <p id="achievement-profile-summary" class="achievement-profile-summary">Inicia sesión para guardar y consultar tu progreso.</p>
+          <div id="achievement-list" class="achievement-list"></div>
+        </section>
       </section>
 
       <footer class="footer"><span>HECHO PARA CORRER · MVP 0.1</span><span>ARTE ORIGINAL · JUEGA LOCAL O EN LAN</span></footer>

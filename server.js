@@ -5,16 +5,18 @@ const express = require("express");
 const http = require("node:http");
 const { Server } = require("socket.io");
 const { createStorage } = require("./storage");
-const { getTrackEdges } = require("./public/track-geometry");
+const { getSmoothedTrack, getTrackEdges } = require("./public/track-geometry");
 
 const PORT = Number(process.env.PORT) || 3000;
 const TOTAL_LAPS = 3;
+const ALLOWED_LAPS = [1, 3, 5, 7];
 const MAX_PLAYERS = 8;
 const STEERING_RADIUS = 7;
 const STEERING_RESPONSE = 8.5;
 const CAR_COLLISION_RADIUS = 1.6;
 const MAX_REVERSE_SPEED = 5;
 const REVERSE_ACCELERATION = 7;
+const SNAPSHOT_INTERVAL_MS = 50;
 const DEFAULT_TRACK_ID = "monaco";
 const BOT_NAMES = ["Chispa", "Turbo", "Pistón", "Rayo", "Choco", "Nube", "Trueno"];
 const CAR_COLORS = ["#30d6c1", "#ffb94b", "#ff6978", "#8a7cff", "#d9ed63", "#54a9ff", "#ff8ccc", "#f7f3e8"];
@@ -26,11 +28,14 @@ const BASE_RACE_POINTS = [100, 70, 50, 35, 25, 20, 15, 10];
 const BASE_RACE_COINS = [120, 85, 60, 45, 35, 30, 25, 20];
 
 function prepareTrack(track) {
-  const points = [
-    ...track.points.slice(track.startIndex),
-    ...track.points.slice(0, track.startIndex),
-  ];
-  const edgeProfile = getTrackEdges({ ...track, points });
+  const geometry = getSmoothedTrack(track);
+  const points = geometry.points;
+  const preparedGeometry = { ...geometry, points };
+  const edgeProfile = getTrackEdges(preparedGeometry);
+  const runoffProfile = getTrackEdges({
+    ...preparedGeometry,
+    width: track.width + (track.runoffWidth || 0) * 2,
+  });
   const segments = points.map((point, index) => {
     const next = points[(index + 1) % points.length];
     const dx = next[0] - point[0];
@@ -43,6 +48,8 @@ function prepareTrack(track) {
       length: Math.hypot(dx, dz),
       widthStart: edgeProfile[index].width,
       widthEnd: edgeProfile[(index + 1) % points.length].width,
+      outerWidthStart: runoffProfile[index].width,
+      outerWidthEnd: runoffProfile[(index + 1) % points.length].width,
     };
   });
   let length = 0;
@@ -50,7 +57,15 @@ function prepareTrack(track) {
     segment.start = length;
     length += segment.length;
   }
-  return { ...track, points, segments, length };
+  const drsZones = (track.drsZones || []).map(([start, end]) => ({
+    start: start * length,
+    end: end * length,
+  }));
+  for (let index = 0; index < segments.length; index += 1) {
+    const midpoint = segments[index].start + segments[index].length / 2;
+    segments[index].drs = drsZones.some((zone) => midpoint >= zone.start && midpoint <= zone.end);
+  }
+  return { ...geometry, points, segments, length, drsZones };
 }
 
 const PREPARED_TRACKS = Object.fromEntries(
@@ -116,7 +131,10 @@ function constrainCarToMap(car, track) {
 function constrainCarToTrack(car, track) {
   const projection = projectToTrack(track, car.x, car.z);
   const trackWidth = Number.isFinite(projection.width) ? projection.width : track.width;
-  const maxOffset = Math.max(0, trackWidth / 2 - CAR_COLLISION_RADIUS * 0.7);
+  const barrierWidth = Number.isFinite(projection.outerWidth)
+    ? projection.outerWidth
+    : trackWidth + (track.runoffWidth || 0) * 2;
+  const maxOffset = Math.max(0, barrierWidth / 2 - CAR_COLLISION_RADIUS * 0.7);
   const distance = Math.sqrt(projection.distanceSquared);
   if (distance > maxOffset) {
     const scale = maxOffset / distance;
@@ -124,7 +142,23 @@ function constrainCarToTrack(car, track) {
     car.z = projection.z + (car.z - projection.z) * scale;
     car.speed *= 0.35;
   }
+  car.onRunoff = distance > Math.max(0, trackWidth / 2 - CAR_COLLISION_RADIUS * 0.7);
   return projection;
+}
+
+function getDrsStatus(projection, car, onTrack) {
+  return onTrack
+    && projection.drs === true
+    && car.input.throttle > 0.75
+    && car.speed >= 12;
+}
+
+function getCarSpeedTuning({ onTrack, drsActive, drifting = false, botSkill = 1 }) {
+  const cornerPenalty = drifting ? 0.95 : 1;
+  return {
+    maxSpeed: (onTrack ? (drsActive ? 36 : 28) * botSkill : 14) * cornerPenalty,
+    acceleration: onTrack ? (drsActive ? 19 : 15) : 7,
+  };
 }
 
 function resolveCarCollisions(cars) {
@@ -152,10 +186,12 @@ function resolveCarCollisions(cars) {
       second.x += normalX * overlap / 2;
       second.z += normalZ * overlap / 2;
 
-      const firstVelocityX = -Math.sin(first.yaw) * first.speed;
-      const firstVelocityZ = -Math.cos(first.yaw) * first.speed;
-      const secondVelocityX = -Math.sin(second.yaw) * second.speed;
-      const secondVelocityZ = -Math.cos(second.yaw) * second.speed;
+      const firstVelocityX = Number.isFinite(first.vx) ? first.vx : -Math.sin(first.yaw) * first.speed;
+      const firstVelocityZ = Number.isFinite(first.vz) ? first.vz : -Math.cos(first.yaw) * first.speed;
+      const secondVelocityX = Number.isFinite(second.vx) ? second.vx : -Math.sin(second.yaw) * second.speed;
+      const secondVelocityZ = Number.isFinite(second.vz) ? second.vz : -Math.cos(second.yaw) * second.speed;
+      first.collisionAt = Date.now();
+      second.collisionAt = Date.now();
       const relativeSpeed = (secondVelocityX - firstVelocityX) * normalX
         + (secondVelocityZ - firstVelocityZ) * normalZ;
       if (relativeSpeed >= 0) continue;
@@ -167,6 +203,10 @@ function resolveCarCollisions(cars) {
       const secondAfterZ = secondVelocityZ + impulse * normalZ;
       first.speed = Math.hypot(firstAfterX, firstAfterZ);
       second.speed = Math.hypot(secondAfterX, secondAfterZ);
+      first.vx = firstAfterX;
+      first.vz = firstAfterZ;
+      second.vx = secondAfterX;
+      second.vz = secondAfterZ;
       if (first.speed > 0.1) first.yaw = Math.atan2(-firstAfterX, -firstAfterZ);
       if (second.speed > 0.1) second.yaw = Math.atan2(-secondAfterX, -secondAfterZ);
     }
@@ -189,6 +229,10 @@ function getTrackPosition(track, distance) {
     width: Number.isFinite(segment.widthStart)
       ? segment.widthStart + (segment.widthEnd - segment.widthStart) * fraction
       : track.width,
+    outerWidth: Number.isFinite(segment.outerWidthStart)
+      ? segment.outerWidthStart + (segment.outerWidthEnd - segment.outerWidthStart) * fraction
+      : track.width + (track.runoffWidth || 0) * 2,
+    drs: segment.drs === true,
   };
 }
 
@@ -215,6 +259,10 @@ function projectToTrack(track, x, z) {
         width: Number.isFinite(segment.widthStart)
           ? segment.widthStart + (segment.widthEnd - segment.widthStart) * fraction
           : track.width,
+        outerWidth: Number.isFinite(segment.outerWidthStart)
+          ? segment.outerWidthStart + (segment.outerWidthEnd - segment.outerWidthStart) * fraction
+          : track.width + (track.runoffWidth || 0) * 2,
+        drs: segment.drs === true,
       };
     }
   }
@@ -231,15 +279,16 @@ function calculateRaceRewards({
 }) {
   const rivals = Math.max(0, entrantCount - 1);
   const multiplier = rivals === 0 ? 0 : Math.min(1, 0.6 + (rivals - 1) * 0.2);
+  const lapMultiplier = clamp(totalLaps / TOTAL_LAPS, 0.5, 1.5);
   const positionIndex = clamp(place - 1, 0, BASE_RACE_POINTS.length - 1);
-  const basePoints = Math.floor(BASE_RACE_POINTS[positionIndex] * multiplier);
-  const baseCoins = Math.floor(BASE_RACE_COINS[positionIndex] * multiplier);
+  const basePoints = Math.floor(BASE_RACE_POINTS[positionIndex] * multiplier * lapMultiplier);
+  const baseCoins = Math.floor(BASE_RACE_COINS[positionIndex] * multiplier * lapMultiplier);
   const completedBonus = lapsCompleted >= totalLaps;
   const fastestLapBonus = Number.isFinite(bestLapMs) && bestLapMs === fastestLapMs;
-  const completionPoints = completedBonus ? Math.floor(25 * multiplier) : 0;
-  const completionCoins = completedBonus ? Math.floor(25 * multiplier) : 0;
-  const fastestLapPoints = fastestLapBonus ? Math.floor(35 * multiplier) : 0;
-  const fastestLapCoins = fastestLapBonus ? Math.floor(30 * multiplier) : 0;
+  const completionPoints = completedBonus ? Math.floor(25 * multiplier * lapMultiplier) : 0;
+  const completionCoins = completedBonus ? Math.floor(25 * multiplier * lapMultiplier) : 0;
+  const fastestLapPoints = fastestLapBonus ? Math.floor(35 * multiplier * lapMultiplier) : 0;
+  const fastestLapCoins = fastestLapBonus ? Math.floor(30 * multiplier * lapMultiplier) : 0;
   return {
     place,
     rivals,
@@ -275,10 +324,18 @@ function createGameServer(options = {}) {
   const cars = new Map();
   let hostId = null;
   let phase = "lobby";
-  let raceSettings = { maxPlayers: MAX_PLAYERS, botsEnabled: false, trackId: DEFAULT_TRACK_ID };
+  let raceSettings = {
+    maxPlayers: MAX_PLAYERS,
+    botsEnabled: false,
+    trackId: DEFAULT_TRACK_ID,
+    laps: TOTAL_LAPS,
+    mode: "race",
+    difficulty: "normal",
+  };
   let nextBotId = 1;
   let countdownEndsAt = 0;
   let raceStartedAt = 0;
+  let pausedAt = 0;
   let raceEntrantCount = 0;
   const raceSettlement = { rewarded: false };
   let lastTick = Date.now();
@@ -298,6 +355,16 @@ function createGameServer(options = {}) {
   app.get("/healthz", (req, res) => res.json({ ok: true }));
   app.get("/api/leaderboard", (req, res) => {
     res.json(storage.leaderboard());
+  });
+  app.get("/api/achievements", (req, res) => res.json(storage.achievements()));
+  app.get("/api/records/:trackId", (req, res) => {
+    if (!PREPARED_TRACKS[req.params.trackId]) {
+      res.status(404).json({ error: "El circuito no está disponible." });
+      return;
+    }
+    const token = req.get("authorization")?.replace(/^Bearer\s+/i, "");
+    const account = token ? storage.getSession(token) : null;
+    res.json(storage.getTrackRecord(req.params.trackId, account?.username));
   });
 
   function getBearerToken(req) {
@@ -370,7 +437,9 @@ function createGameServer(options = {}) {
       return;
     }
     const result = storage.buyItem(account.username, item);
-    res.status(result.status || 200).json(result.ok ? result.profile : { error: result.error });
+    res.status(result.status || 200).json(result.ok
+      ? { ...result.profile, newlyUnlocked: result.achievements }
+      : { error: result.error });
   });
   app.post("/api/inventory/equip", (req, res) => {
     const account = requireAccount(req, res);
@@ -440,12 +509,29 @@ function createGameServer(options = {}) {
       speed: 0,
       steering: 0,
       input: { throttle: 0, brake: 0, steer: 0 },
+      vx: 0,
+      vz: 0,
+      lateralSpeed: 0,
+      driftAngle: 0,
+      drifting: false,
+      onRunoff: false,
+      drsActive: false,
+      collisionAt: 0,
+      ready: false,
+      laneBias: isBot ? ((gridIndex % 3) - 1) * 1.5 : 0,
+      botSkill: isBot
+        ? ({ easy: 0.78, normal: 0.92, hard: 1.04 }[raceSettings.difficulty] || 0.92)
+          * (0.94 + (gridIndex % 5) * 0.025)
+        : 1,
+      botReaction: 5 + (gridIndex % 4),
+      botSteering: 0,
       lastTrackDistance: gridPosition.distance,
       progress: 0,
       lapsCompleted: 0,
-      finishProgress: TOTAL_LAPS * track.length + startDistance,
+      finishProgress: raceSettings.laps * track.length + startDistance,
       lapStartedAt: 0,
       lapTimesMs: [],
+      lapSamples: [],
       bestLapMs: null,
       finishedAt: null,
       reward: null,
@@ -454,7 +540,9 @@ function createGameServer(options = {}) {
 
   function syncBots() {
     const humans = [...cars.values()].filter((car) => !car.isBot).length;
-    const targetBots = raceSettings.botsEnabled ? raceSettings.maxPlayers - humans : 0;
+    const targetBots = raceSettings.mode === "race" && raceSettings.botsEnabled
+      ? raceSettings.maxPlayers - humans
+      : 0;
     const existingBots = [...cars.values()].filter((car) => car.isBot);
     while (existingBots.length > targetBots) {
       cars.delete(existingBots.pop().id);
@@ -503,15 +591,18 @@ function createGameServer(options = {}) {
           place: index + 1,
           entrantCount: raceEntrantCount,
           lapsCompleted: car.lapsCompleted,
+          totalLaps: raceSettings.laps,
           bestLapMs: car.bestLapMs,
           fastestLapMs,
         });
-        if (car.accountUsername) {
+        if (car.accountUsername && raceSettings.mode === "race") {
           try {
-            storage.recordRace(car.accountUsername, {
+            const result = storage.recordRace(car.accountUsername, {
               ...car.reward,
               bestLapMs: car.bestLapMs,
+              trackId: raceSettings.trackId,
             });
+            car.reward.achievements = result.achievements;
           } catch (error) {
             console.error(`No se pudo guardar la recompensa de ${car.accountUsername}.`, error);
             car.reward.persistenceError = true;
@@ -527,18 +618,26 @@ function createGameServer(options = {}) {
     const finishTiming = getFinishTiming(cars.values(), raceStartedAt);
     const raceEndAt = phase === "finished"
       ? Math.max(...standings.map((car) => car.finishedAt || 0))
-      : now;
+      : phase === "paused" ? pausedAt : now;
     return {
       phase,
       hostId,
-      totalLaps: TOTAL_LAPS,
+      totalLaps: raceSettings.laps,
+      mode: raceSettings.mode,
+      difficulty: raceSettings.difficulty,
       track: {
         ...TRACKS[raceSettings.trackId],
         points: PREPARED_TRACKS[raceSettings.trackId].points,
+        startIndex: 0,
+        geometryVersion: 1,
+        drsZones: PREPARED_TRACKS[raceSettings.trackId].drsZones,
       },
       maxPlayers: raceSettings.maxPlayers,
       botsEnabled: raceSettings.botsEnabled,
-      raceElapsedMs: raceStartedAt > 0 && (phase === "racing" || phase === "finished")
+      readyCount: [...cars.values()].filter((car) => !car.isBot && car.ready).length,
+      humanCount: [...cars.values()].filter((car) => !car.isBot).length,
+      paused: phase === "paused",
+      raceElapsedMs: raceStartedAt > 0 && ["racing", "finished", "paused"].includes(phase)
         ? Math.max(0, raceEndAt - raceStartedAt)
         : 0,
       countdown: phase === "countdown" ? Math.max(0, Math.ceil((countdownEndsAt - now) / 1000)) : 0,
@@ -555,11 +654,19 @@ function createGameServer(options = {}) {
         steering: car.steering,
         accelerating: car.input.throttle > 0,
         braking: car.input.brake > 0 || car.speed < -0.1,
-        lap: Math.min(TOTAL_LAPS, car.lapsCompleted + 1),
+        onRunoff: car.onRunoff === true,
+        drsActive: car.drsActive === true,
+        drifting: car.drifting === true,
+        driftAngle: car.driftAngle,
+        ready: car.ready,
+        lap: Math.min(raceSettings.laps, car.lapsCompleted + 1),
+        lastLapMs: car.lapTimesMs[car.lapTimesMs.length - 1] || null,
         progress: car.progress,
         finished: car.finishedAt !== null,
         bestLapMs: car.bestLapMs,
         reward: car.reward ? { ...car.reward } : null,
+        recordReward: car.recordReward ? { ...car.recordReward } : null,
+        collisionAt: car.collisionAt,
         ...(finishTiming.get(car.id) || {
           isFirstFinisher: false,
           finishTimeMs: null,
@@ -580,19 +687,45 @@ function createGameServer(options = {}) {
     const projection = projectToTrack(track, car.x, car.z);
     const distanceFromTrack = Math.sqrt(projection.distanceSquared);
     if (car.isBot) {
-      const target = getTrackPosition(track, projection.distance + 7);
-      const desiredYaw = Math.atan2(-(target.x - car.x), -(target.z - car.z));
+      const lookAhead = clamp(7 + Math.abs(car.speed) * 0.65, 8, 22);
+      const target = getTrackPosition(track, projection.distance + lookAhead);
+      let targetOffset = car.laneBias;
+      const blockingCar = [...cars.values()].find((other) => {
+        if (other.id === car.id || other.finishedAt !== null) return false;
+        const otherProjection = projectToTrack(track, other.x, other.z);
+        const ahead = (otherProjection.distance - projection.distance + track.length) % track.length;
+        const otherOffset = Math.hypot(other.x - otherProjection.x, other.z - otherProjection.z);
+        return ahead > 0.5 && ahead < 18 && otherOffset < 4;
+      });
+      if (blockingCar) {
+        const blockerProjection = projectToTrack(track, blockingCar.x, blockingCar.z);
+        const side = Math.sign(blockingCar.x - blockerProjection.x) || 1;
+        targetOffset = clamp(-side * track.width * 0.2, -track.width * 0.28, track.width * 0.28);
+      }
+      const targetX = target.x - target.tangentZ * targetOffset;
+      const targetZ = target.z + target.tangentX * targetOffset;
+      const desiredYaw = Math.atan2(-(targetX - car.x), -(targetZ - car.z));
       const headingError = wrapAngle(desiredYaw - car.yaw);
+      const cornerDemand = Math.abs(headingError);
+      const desiredSteer = clamp(-headingError * (car.botSkill > 1 ? 2 : 1.8), -1, 1);
+      car.botSteering += (desiredSteer - car.botSteering) * Math.min(1, car.botReaction * dt);
       car.input = {
-        throttle: 1,
-        brake: 0,
-        steer: clamp(-headingError * 1.8, -1, 1),
+        throttle: clamp((1 - cornerDemand * 0.45) * car.botSkill, 0.3, 1),
+        brake: clamp((cornerDemand - 0.65) * (car.botSkill > 1 ? 1.1 : 0.9), 0, 0.75),
+        steer: car.botSteering,
       };
     }
 
-    const onTrack = distanceFromTrack <= projection.width * 0.75;
-    const maxSpeed = onTrack ? 18 : 8;
-    const acceleration = onTrack ? 11 : 6;
+    const onTrack = distanceFromTrack <= Math.max(0, projection.width / 2 - CAR_COLLISION_RADIUS * 0.7);
+    const drsEligible = getDrsStatus(projection, car, onTrack);
+    car.drsActive = drsEligible;
+    const tuning = getCarSpeedTuning({
+      onTrack,
+      drsActive: drsEligible,
+      drifting: car.drifting,
+      botSkill: car.isBot ? car.botSkill : 1,
+    });
+    const { maxSpeed, acceleration } = tuning;
     if (car.input.brake > 0) {
       if (car.speed > 0) {
         car.speed = Math.max(0, car.speed - 18 * car.input.brake * dt);
@@ -618,13 +751,41 @@ function createGameServer(options = {}) {
     );
 
     if (Math.abs(car.speed) > 0.1) {
-      car.yaw = wrapAngle(car.yaw - (car.speed / STEERING_RADIUS) * car.steering * dt);
-      car.x -= Math.sin(car.yaw) * car.speed * dt;
-      car.z -= Math.cos(car.yaw) * car.speed * dt;
+      const grip = onTrack ? 7.5 : 2.8;
+      const slideDemand = car.steering * Math.max(0, Math.abs(car.speed) - 9) * (onTrack ? 0.22 : 0.3);
+      car.lateralSpeed += (slideDemand - car.lateralSpeed) * Math.min(1, grip * dt);
+      const steeringRate = car.speed / (STEERING_RADIUS + Math.abs(car.speed) * 0.2);
+      car.yaw = wrapAngle(car.yaw - steeringRate * car.steering * dt);
+      const forwardX = -Math.sin(car.yaw) * car.speed;
+      const forwardZ = -Math.cos(car.yaw) * car.speed;
+      const lateralX = Math.cos(car.yaw) * car.lateralSpeed;
+      const lateralZ = -Math.sin(car.yaw) * car.lateralSpeed;
+      car.vx = forwardX + lateralX;
+      car.vz = forwardZ + lateralZ;
+      car.x += car.vx * dt;
+      car.z += car.vz * dt;
+      car.driftAngle = Math.atan2(car.lateralSpeed, Math.max(Math.abs(car.speed), 0.1));
+      car.drifting = Math.abs(car.driftAngle) > 0.12 && Math.abs(car.speed) > 10;
+    } else {
+      car.lateralSpeed *= Math.max(0, 1 - 8 * dt);
+      car.vx = 0;
+      car.vz = 0;
+      car.driftAngle = 0;
+      car.drifting = false;
     }
 
     constrainCarToMap(car, track);
     const nextProjection = constrainCarToTrack(car, track);
+    car.drsActive = getDrsStatus(nextProjection, car, !car.onRunoff);
+    if (raceSettings.mode === "timeTrial" && phase === "racing") {
+      car.lapSamples.push({
+        t: Math.max(0, Date.now() - car.lapStartedAt),
+        x: car.x,
+        z: car.z,
+        yaw: car.yaw,
+      });
+      if (car.lapSamples.length > 3000) car.lapSamples.shift();
+    }
     let distanceDelta = nextProjection.distance - car.lastTrackDistance;
     if (distanceDelta < -track.length / 2) distanceDelta += track.length;
     if (distanceDelta > track.length / 2) distanceDelta -= track.length;
@@ -640,7 +801,12 @@ function createGameServer(options = {}) {
     if (phase === "countdown" && now >= countdownEndsAt) {
       phase = "racing";
       raceStartedAt = now;
-      for (const car of cars.values()) car.lapStartedAt = now;
+      for (const car of cars.values()) {
+        car.lapStartedAt = now;
+        if (raceSettings.mode === "timeTrial") {
+          car.lapSamples = [{ t: 0, x: car.x, z: car.z, yaw: car.yaw }];
+        }
+      }
       dt = 0;
     }
     if (phase === "racing") {
@@ -650,7 +816,7 @@ function createGameServer(options = {}) {
         updateCar(car, dt);
         const trackLength = PREPARED_TRACKS[raceSettings.trackId].length;
         const completedLaps = Math.min(
-          TOTAL_LAPS,
+          raceSettings.laps,
           Math.floor((car.progress + 1e-6) / trackLength)
         );
         if (completedLaps > car.lapsCompleted) {
@@ -659,6 +825,33 @@ function createGameServer(options = {}) {
           const lapTimeMs = Math.max(0, crossingAt - car.lapStartedAt);
           car.lapTimesMs.push(lapTimeMs);
           car.bestLapMs = car.bestLapMs === null ? lapTimeMs : Math.min(car.bestLapMs, lapTimeMs);
+          if (raceSettings.mode === "timeTrial") {
+            const samples = car.lapSamples
+              .filter((sample) => sample.t <= lapTimeMs)
+              .map((sample) => ({ ...sample, t: Math.max(0, sample.t) }));
+            samples.push({ t: lapTimeMs, x: car.x, z: car.z, yaw: car.yaw });
+            try {
+              const record = storage.recordTimeTrial(
+                raceSettings.trackId,
+                car.accountUsername,
+                lapTimeMs,
+                samples
+              );
+              car.recordReward = {
+                bestLapMs: record.bestLapMs,
+                isTrackRecord: record.isTrackRecord,
+                isPersonalRecord: record.isPersonalRecord,
+                achievements: record.achievements,
+                coins: record.isPersonalRecord ? (record.isTrackRecord ? 75 : 50) : 0,
+                points: record.isPersonalRecord ? (record.isTrackRecord ? 75 : 50) : 0,
+              };
+              if (record.achievements.length) io.to(car.id).emit("achievementUnlocked", record.achievements);
+              if (record.isTrackRecord) io.emit("timeTrialRecord", storage.getTrackRecord(raceSettings.trackId));
+            } catch (error) {
+              console.error("No se pudo guardar el récord de contrarreloj.", error);
+            }
+            car.lapSamples = [{ t: 0, x: car.x, z: car.z, yaw: car.yaw }];
+          }
           car.lapStartedAt = crossingAt;
           car.lapsCompleted = completedLaps;
         }
@@ -666,7 +859,7 @@ function createGameServer(options = {}) {
           car.finishedAt = getCrossingTimeMs(previousProgress, car.progress, car.finishProgress, now, dt);
         }
       }
-      resolveCarCollisions(cars.values());
+      if (raceSettings.mode !== "timeTrial") resolveCarCollisions(cars.values());
       for (const car of cars.values()) {
         if (car.finishedAt !== null) continue;
         constrainCarToMap(car, PREPARED_TRACKS[raceSettings.trackId]);
@@ -675,7 +868,7 @@ function createGameServer(options = {}) {
       }
       if (areHumanDriversFinished(cars.values())) settleRace(now);
     }
-    if (now - lastBroadcastAt >= 100) broadcastState(now);
+    if (now - lastBroadcastAt >= SNAPSHOT_INTERVAL_MS) broadcastState(now);
   }, 50);
 
   io.use((socket, next) => {
@@ -710,19 +903,24 @@ function createGameServer(options = {}) {
         acknowledge({ ok: false, error: "La carrera ya ha comenzado. Espera a la siguiente." });
         return;
       }
-      const humanCount = [...cars.values()].filter((car) => !car.isBot).length;
-      if (humanCount >= raceSettings.maxPlayers) {
-        acknowledge({ ok: false, error: "La sala está completa." });
-        return;
-      }
-
       const name = account?.username || String(payload.name || "Piloto").trim().slice(0, 16) || "Piloto";
       if (!hostId) {
         const hasNewSettings = payload.maxPlayers !== undefined || payload.botsEnabled !== undefined;
         const legacyBotCount = clamp(Math.round(Number(payload.botCount) || 0), 0, MAX_PLAYERS - 1);
-        const requestedMaxPlayers = hasNewSettings
-          ? Number(payload.maxPlayers)
-          : legacyBotCount + 1;
+        const mode = payload.mode === undefined ? "race" : payload.mode;
+        if (!["race", "timeTrial"].includes(mode)) {
+          acknowledge({ ok: false, error: "El modo seleccionado no está disponible." });
+          return;
+        }
+        const requestedMaxPlayers = mode === "timeTrial"
+          ? 1
+          : hasNewSettings ? Number(payload.maxPlayers) : legacyBotCount + 1;
+        const laps = payload.laps === undefined ? TOTAL_LAPS : Number(payload.laps);
+        const difficulty = payload.difficulty === undefined ? "normal" : payload.difficulty;
+        if (!["easy", "normal", "hard"].includes(difficulty)) {
+          acknowledge({ ok: false, error: "La dificultad de los bots no es válida." });
+          return;
+        }
         const trackId = String(payload.trackId || DEFAULT_TRACK_ID);
         if (!Number.isInteger(requestedMaxPlayers) || requestedMaxPlayers < 1 || requestedMaxPlayers > MAX_PLAYERS) {
           acknowledge({ ok: false, error: "El número de participantes debe estar entre 1 y 8." });
@@ -732,11 +930,23 @@ function createGameServer(options = {}) {
           acknowledge({ ok: false, error: "El circuito seleccionado no está disponible." });
           return;
         }
+        if (typeof payload.laps === "boolean" || !ALLOWED_LAPS.includes(laps)) {
+          acknowledge({ ok: false, error: "El número de vueltas debe ser 1, 3, 5 o 7." });
+          return;
+        }
         raceSettings = {
           maxPlayers: requestedMaxPlayers,
-          botsEnabled: hasNewSettings ? payload.botsEnabled === true : legacyBotCount > 0,
+          botsEnabled: mode === "race" && (hasNewSettings ? payload.botsEnabled === true : legacyBotCount > 0),
           trackId,
+          laps,
+          mode,
+          difficulty,
         };
+      }
+      const humanCount = [...cars.values()].filter((car) => !car.isBot).length;
+      if (humanCount >= raceSettings.maxPlayers) {
+        acknowledge({ ok: false, error: "La sala está completa." });
+        return;
       }
       if (hostId && raceSettings.botsEnabled) {
         const replaceableBot = [...cars.values()].find((car) => car.isBot);
@@ -756,7 +966,10 @@ function createGameServer(options = {}) {
         hostId = socket.id;
       }
       syncBots();
-      acknowledge({ ok: true, id: socket.id });
+      const ghost = raceSettings.mode === "timeTrial"
+        ? storage.getTrackRecord(raceSettings.trackId, account?.username)
+        : null;
+      acknowledge({ ok: true, id: socket.id, ghost });
       broadcastState();
     });
 
@@ -772,6 +985,8 @@ function createGameServer(options = {}) {
 
     socket.on("startRace", () => {
       if (socket.id !== hostId || phase !== "lobby" || cars.size === 0) return;
+      const humans = [...cars.values()].filter((car) => !car.isBot);
+      if (humans.length > 1 && humans.some((car) => !car.ready)) return;
       phase = "countdown";
       countdownEndsAt = Date.now() + 3200;
       raceStartedAt = 0;
@@ -783,7 +998,74 @@ function createGameServer(options = {}) {
         car.lapTimesMs = [];
         car.bestLapMs = null;
         car.reward = null;
+        car.recordReward = null;
+        car.lapSamples = [];
       }
+      broadcastState();
+    });
+
+    socket.on("toggleReady", (acknowledge = () => {}) => {
+      const car = cars.get(socket.id);
+      if (!car || car.isBot || phase !== "lobby") {
+        acknowledge({ ok: false, error: "Solo los pilotos de una sala pueden marcarse listos." });
+        return;
+      }
+      car.ready = !car.ready;
+      broadcastState();
+      acknowledge({ ok: true, ready: car.ready });
+    });
+
+    socket.on("togglePause", (acknowledge = () => {}) => {
+      const car = cars.get(socket.id);
+      if (!car || car.isBot) {
+        acknowledge({ ok: false, error: "No se puede pausar desde este piloto." });
+        return;
+      }
+      const humanCount = [...cars.values()].filter((entry) => !entry.isBot).length;
+      car.input = { throttle: 0, brake: 0, steer: 0 };
+      if (phase === "paused" && socket.id === hostId) {
+        const pauseDuration = Math.max(0, Date.now() - pausedAt);
+        raceStartedAt += pauseDuration;
+        for (const entry of cars.values()) {
+          if (entry.lapStartedAt) entry.lapStartedAt += pauseDuration;
+        }
+        phase = "racing";
+        pausedAt = 0;
+        broadcastState();
+        acknowledge({ ok: true, paused: false, global: true });
+        return;
+      }
+      if (phase !== "racing") {
+        acknowledge({ ok: false, error: "La carrera no se puede pausar ahora." });
+        return;
+      }
+      if (humanCount === 1) {
+        phase = "paused";
+        pausedAt = Date.now();
+        broadcastState();
+        acknowledge({ ok: true, paused: true, global: true });
+      } else {
+        car.pauseMenuOpen = !car.pauseMenuOpen;
+        io.to(socket.id).emit("pauseNotice", {
+          paused: car.pauseMenuOpen,
+          message: "Multijugador en curso: la carrera continúa.",
+        });
+        acknowledge({ ok: true, paused: car.pauseMenuOpen, global: false });
+      }
+    });
+
+    socket.on("restartPausedRace", () => {
+      if (socket.id !== hostId || phase !== "paused") return;
+      const existingCars = [...cars.values()];
+      cars.clear();
+      for (const car of existingCars) cars.set(car.id, makeCar(car));
+      syncBots();
+      phase = "lobby";
+      pausedAt = 0;
+      countdownEndsAt = 0;
+      raceStartedAt = 0;
+      raceEntrantCount = 0;
+      raceSettlement.rewarded = false;
       broadcastState();
     });
 
@@ -810,7 +1092,14 @@ function createGameServer(options = {}) {
         cars.clear();
         hostId = null;
         phase = "lobby";
-        raceSettings = { maxPlayers: MAX_PLAYERS, botsEnabled: false, trackId: DEFAULT_TRACK_ID };
+        raceSettings = {
+          maxPlayers: MAX_PLAYERS,
+          botsEnabled: false,
+          trackId: DEFAULT_TRACK_ID,
+          laps: TOTAL_LAPS,
+          mode: "race",
+          difficulty: "normal",
+        };
         nextBotId = 1;
         countdownEndsAt = 0;
         raceStartedAt = 0;
@@ -850,6 +1139,11 @@ if (require.main === module) {
 
 module.exports = {
   createGameServer,
+  prepareTrack,
+  getTrackPosition,
+  projectToTrack,
+  getDrsStatus,
+  getCarSpeedTuning,
   areHumanDriversFinished,
   calculateRaceRewards,
   settleRaceOnce,

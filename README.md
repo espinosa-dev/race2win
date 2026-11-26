@@ -25,20 +25,27 @@ La primera persona que entra crea la sala, elige el circuito, el aforo (hasta oc
 | `W` o `↑` | Acelerar |
 | `S` o `↓` | Frenar; mantener al detenerse para marcha atrás |
 | `A`/`D` o `←`/`→` | Girar |
+| `C` | Cambiar entre cámara arcade, panorámica y capó |
+| `Esc` | Pausar (en multijugador, solo abre el menú local) |
+| Pantalla táctil | Pedales y dirección en pantalla |
 
-## MVP actual
+## Funciones actuales
 
-- Circuitos 3D inspirados en Monaco y Monza, con anchura adaptativa en curvas y minimapa en directo.
-- Bots y multijugador en red local.
+- Cuatro circuitos 3D: Monaco, Monza, Tokyo Night y Sahara Rally. Sus rutas Catmull-Rom se generan en servidor y cliente desde una geometría compartida.
+- Asfalto, pianos temáticos, escapatorias, barreras exteriores, zonas DRS y minimapa en directo.
+- Carreras LAN de hasta ocho participantes, parrilla con bots configurables, dificultad de IA y estado «Listo».
+- Contrarreloj individual con récords por circuito y fantasma persistente.
+- Físicas arcade con marcha atrás, derrape controlable, escapatorias transitables y colisiones entre coches en carreras.
 - Límite físico del mapa y de la simulación.
-- Vallado alrededor del circuito y colisiones entre coches.
+- Selector de cámara, controles táctiles, etiquetas de pilotos, indicadores de DRS y menús de pausa.
 - Posiciones en directo, cronómetro, tiempos de llegada y diferencias.
 - Detección de vuelta y meta al cruzar la línea en el sentido correcto.
 - Cuentas locales con contraseñas derivadas mediante scrypt, sesiones aleatorias persistentes, 500 RC iniciales y datos en `data/accounts.json` y `data/sessions.json`.
-- Tienda e inventario validados por el servidor, con puntos y RC por carrera.
+- Tienda e inventario validados por el servidor, con puntos, RaceCoins y logros.
 - Paddock con escaparate 3D del coche, selección visual de circuitos, estadísticas del piloto y clasificación global Top 10.
 - Catálogo compartido en `public/catalog.json` y cosméticos visibles en coches de jugadores y bots.
-- Escena Three.js con sombras, pianos, parrilla, meta, decoración de circuito y coches personalizables.
+- Récords y trazas de fantasma en `data/records.json`; las cuentas, sesiones y récords locales están excluidos de Git.
+- Escena Three.js temática con sombras, parrilla, meta, decoración y coches personalizables.
 
 Las cuentas y sesiones están diseñadas para el servidor LAN local. Las contraseñas se almacenan derivadas con salt; la comunicación HTTP de una LAN no cifra el tráfico, por lo que redes no confiables requieren HTTPS antes de exponer el servidor.
 

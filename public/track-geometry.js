@@ -11,6 +11,38 @@
     return first * second < 0 && third * fourth < 0;
   }
 
+  function getSmoothedTrack(track, subdivisions = 4) {
+    if (track.geometryVersion === 1) return track;
+    const controls = track.points;
+    const controlCount = controls.length;
+    const startIndex = ((Math.trunc(track.startIndex || 0) % controlCount) + controlCount) % controlCount;
+    const scale = Number.isFinite(track.scale) ? track.scale : 1;
+    const points = [];
+    for (let control = 0; control < controlCount; control += 1) {
+      const currentIndex = (startIndex + control) % controlCount;
+      const p0 = controls[(currentIndex - 1 + controlCount) % controlCount];
+      const p1 = controls[currentIndex];
+      const p2 = controls[(currentIndex + 1) % controlCount];
+      const p3 = controls[(currentIndex + 2) % controlCount];
+      for (let step = 0; step < subdivisions; step += 1) {
+        const t = step / subdivisions;
+        const t2 = t * t;
+        const t3 = t2 * t;
+        const sample = [0, 0];
+        for (let axis = 0; axis < 2; axis += 1) {
+          sample[axis] = scale * 0.5 * (
+            2 * p1[axis]
+            + (-p0[axis] + p2[axis]) * t
+            + (2 * p0[axis] - 5 * p1[axis] + 4 * p2[axis] - p3[axis]) * t2
+            + (-p0[axis] + 3 * p1[axis] - 3 * p2[axis] + p3[axis]) * t3
+          );
+        }
+        points.push(sample);
+      }
+    }
+    return { ...track, points, startIndex: 0, scale: 1, geometryVersion: 1 };
+  }
+
   function buildEdges(track, halfWidths) {
     const count = track.points.length;
     return track.points.map((point, index) => {
@@ -86,7 +118,7 @@
     return edges;
   }
 
-  const api = { getTrackEdges };
+  const api = { getSmoothedTrack, getTrackEdges };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.RaceTrackGeometry = api;
 }(globalThis));

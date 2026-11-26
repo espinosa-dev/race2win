@@ -6,7 +6,8 @@ const { afterEach, beforeEach, test } = require("node:test");
 const { io: createClient } = require("socket.io-client");
 const tracks = require("../public/tracks.json");
 const catalog = require("../public/catalog.json");
-const { getTrackEdges } = require("../public/track-geometry");
+const { getSmoothedTrack, getTrackEdges } = require("../public/track-geometry");
+const { createStorage } = require("../storage");
 const {
   areHumanDriversFinished,
   calculateRaceRewards,
@@ -14,7 +15,12 @@ const {
   constrainCarToTrack,
   createGameServer,
   getCrossingTimeMs,
+  getCarSpeedTuning,
+  getDrsStatus,
   getFinishTiming,
+  getTrackPosition,
+  prepareTrack,
+  projectToTrack,
   resolveCarCollisions,
   settleRaceOnce,
 } = require("../server");
@@ -207,6 +213,21 @@ test("calculates competitive rewards with completion and fastest-lap bonuses", (
   });
   assert.equal(oneOnOne.basePoints, 60);
   assert.equal(oneOnOne.baseCoins, 72);
+
+  const oneLap = calculateRaceRewards({
+    place: 1,
+    entrantCount: 2,
+    lapsCompleted: 1,
+    totalLaps: 1,
+  });
+  const fiveLaps = calculateRaceRewards({
+    place: 1,
+    entrantCount: 2,
+    lapsCompleted: 5,
+    totalLaps: 5,
+  });
+  assert.ok(oneLap.coins < oneOnOne.coins);
+  assert.ok(fiveLaps.coins > oneOnOne.coins);
 });
 
 test("settles a race only once even if completion is requested repeatedly", () => {
@@ -226,7 +247,7 @@ test("keeps cars inside map bounds and stops them at the edge", () => {
 
 test("keeps circuit centerlines free of crossing and overlapping sections", () => {
   for (const track of Object.values(tracks)) {
-    const points = track.points;
+    const points = getSmoothedTrack(track).points;
     for (let first = 0; first < points.length; first += 1) {
       for (let second = first + 2; second < points.length; second += 1) {
         if (first === 0 && second === points.length - 1) continue;
@@ -247,51 +268,115 @@ test("keeps circuit centerlines free of crossing and overlapping sections", () =
 
 test("keeps widened road edges non-intersecting through tight corners", () => {
   for (const track of Object.values(tracks)) {
-    const edges = getTrackEdges(track);
-    for (const edge of edges) {
-      assert.ok(edge.width > 0 && edge.width <= track.width);
-    }
-    for (const side of ["left", "right"]) {
-      for (let first = 0; first < edges.length; first += 1) {
-        for (let second = first + 2; second < edges.length; second += 1) {
-          if (first === 0 && second === edges.length - 1) continue;
-          assert.equal(
-            segmentsIntersect(
-              edges[first][side],
-              edges[(first + 1) % edges.length][side],
-              edges[second][side],
-              edges[(second + 1) % edges.length][side]
-            ),
-            false,
-            `${track.name} ${side} road edge overlaps at ${first} and ${second}`
-          );
+    const smoothedTrack = getSmoothedTrack(track);
+    assert.equal(smoothedTrack.points.length, track.points.length * 4);
+    for (const [label, width] of [
+      ["road", track.width],
+      ["runoff", track.width + track.runoffWidth * 2],
+    ]) {
+      const edges = getTrackEdges({ ...smoothedTrack, width });
+      for (const edge of edges) {
+        assert.ok(edge.width > 0 && edge.width <= width);
+      }
+      for (const side of ["left", "right"]) {
+        for (let first = 0; first < edges.length; first += 1) {
+          for (let second = first + 2; second < edges.length; second += 1) {
+            if (first === 0 && second === edges.length - 1) continue;
+            assert.equal(
+              segmentsIntersect(
+                edges[first][side],
+                edges[(first + 1) % edges.length][side],
+                edges[second][side],
+                edges[(second + 1) % edges.length][side]
+              ),
+              false,
+              `${track.name} ${label} ${side} edge overlaps at ${first} and ${second}`
+            );
+          }
+        }
+        for (let leftIndex = 0; leftIndex < edges.length; leftIndex += 1) {
+          for (let rightIndex = 0; rightIndex < edges.length; rightIndex += 1) {
+            const adjacent = Math.min(
+              (rightIndex - leftIndex + edges.length) % edges.length,
+              (leftIndex - rightIndex + edges.length) % edges.length
+            ) <= 1;
+            if (adjacent) continue;
+            assert.equal(
+              segmentsIntersect(
+                edges[leftIndex].left,
+                edges[(leftIndex + 1) % edges.length].left,
+                edges[rightIndex].right,
+                edges[(rightIndex + 1) % edges.length].right
+              ),
+              false,
+              `${track.name} ${label} inner and outer borders overlap around ${leftIndex} and ${rightIndex}`
+            );
+          }
         }
       }
-      for (let leftIndex = 0; leftIndex < edges.length; leftIndex += 1) {
-        for (let rightIndex = 0; rightIndex < edges.length; rightIndex += 1) {
-          const adjacent = Math.min(
-            (rightIndex - leftIndex + edges.length) % edges.length,
-            (leftIndex - rightIndex + edges.length) % edges.length
-          ) <= 1;
-          if (adjacent) continue;
-          assert.equal(
-            segmentsIntersect(
-              edges[leftIndex].left,
-              edges[(leftIndex + 1) % edges.length].left,
-              edges[rightIndex].right,
-              edges[(rightIndex + 1) % edges.length].right
-            ),
-            false,
-            `${track.name} inner and outer borders overlap around ${leftIndex} and ${rightIndex}`
-          );
-        }
-      }
+      assert.ok(
+        edges.filter((edge) => edge.width >= width * 0.8).length >= edges.length * 0.4,
+        `${track.name} ${label} should preserve most of its requested width`
+      );
     }
-    assert.ok(
-      edges.filter((edge) => edge.width >= track.width * 0.8).length >= edges.length * 0.4,
-      `${track.name} should preserve most of its requested width`
-    );
   }
+});
+
+test("keeps cars on the runoff without a collision until the outer barrier", () => {
+  const track = {
+    width: 10,
+    runoffWidth: 5,
+    segments: [{
+      x: 0, z: 0, dx: 20, dz: 0, length: 20, start: 0,
+      widthStart: 10, widthEnd: 10, outerWidthStart: 20, outerWidthEnd: 20,
+    }],
+    length: 20,
+  };
+  const runoffCar = { x: 5, z: 6, speed: 20 };
+  constrainCarToTrack(runoffCar, track);
+  assert.equal(runoffCar.z, 6);
+  assert.equal(runoffCar.speed, 20);
+  assert.equal(runoffCar.onRunoff, true);
+
+  const barrierCar = { x: 5, z: 11, speed: 20 };
+  constrainCarToTrack(barrierCar, track);
+  assert.ok(Math.abs(barrierCar.z) <= 8.88);
+  assert.equal(barrierCar.speed, 7);
+});
+
+test("uses a closed smoothed route for simulation with DRS distance zones", () => {
+  for (const source of Object.values(tracks)) {
+    const prepared = prepareTrack(source);
+    assert.equal(prepared.points.length, source.points.length * 4);
+    assert.equal(prepared.startIndex, 0);
+    assert.equal(prepared.geometryVersion, 1);
+    assert.ok(prepared.drsZones.length >= 1);
+    for (const zone of prepared.drsZones) {
+      const sample = getTrackPosition(prepared, (zone.start + zone.end) / 2);
+      assert.equal(projectToTrack(prepared, sample.x, sample.z).drs, true);
+    }
+  }
+});
+
+test("activates DRS only on-track under acceleration and applies its speed boost", () => {
+  const projection = { drs: true };
+  const car = { input: { throttle: 1 }, speed: 15 };
+  assert.equal(getDrsStatus(projection, car, true), true);
+  assert.equal(getDrsStatus(projection, car, false), false);
+  assert.equal(getDrsStatus(projection, { input: { throttle: 0.5 }, speed: 15 }, true), false);
+  assert.equal(getDrsStatus(projection, { input: { throttle: 1 }, speed: 11 }, true), false);
+  assert.deepEqual(getCarSpeedTuning({ onTrack: true, drsActive: false }), {
+    maxSpeed: 28,
+    acceleration: 15,
+  });
+  assert.deepEqual(getCarSpeedTuning({ onTrack: true, drsActive: true }), {
+    maxSpeed: 36,
+    acceleration: 19,
+  });
+  assert.deepEqual(getCarSpeedTuning({ onTrack: false, drsActive: false }), {
+    maxSpeed: 14,
+    acceleration: 7,
+  });
 });
 
 test("keeps a car inside the track barriers and slows it on impact", () => {
@@ -349,7 +434,10 @@ test("serves the game, Three.js locally, and health status", async () => {
   assert.deepEqual(await health.json(), { ok: true });
   const tracks = await fetch(`${baseUrl}/tracks.json`);
   assert.equal(tracks.status, 200);
-  assert.deepEqual(Object.keys(await tracks.json()).sort(), ["monaco", "monza"]);
+  assert.deepEqual(Object.keys(await tracks.json()).sort(), ["monaco", "monza", "sahara", "tokyo"]);
+  const achievements = await fetch(`${baseUrl}/api/achievements`);
+  assert.equal(achievements.status, 200);
+  assert.ok((await achievements.json()).some((achievement) => achievement.id === "time_trial_clear"));
   const catalogResponse = await fetch(`${baseUrl}/catalog.json`);
   assert.equal(catalogResponse.status, 200);
   assert.deepEqual(await catalogResponse.json(), catalog);
@@ -426,6 +514,29 @@ test("keeps an active login session valid after the server restarts", async () =
   assert.equal(fs.readFileSync(sessionsPath, "utf8").includes(expiredDigest), false);
 });
 
+test("persists time-trial records and rewards each new personal best once", async () => {
+  const storage = createStorage(dataDir, catalog);
+  const { profile } = await storage.register("TimePilot", "RacingPass123");
+  assert.equal(profile.coins, 500);
+  const first = storage.recordTimeTrial("monaco", "TimePilot", 95000, [{ t: 0, x: 1, z: 2, yaw: 0 }]);
+  assert.equal(first.isTrackRecord, true);
+  assert.equal(first.isPersonalRecord, true);
+  assert.ok(first.achievements.some((achievement) => achievement.id === "time_trial_clear"));
+  assert.equal(first.profile.coins, 605);
+
+  const slower = storage.recordTimeTrial("monaco", "TimePilot", 96000, []);
+  assert.equal(slower.isPersonalRecord, false);
+  assert.equal(slower.profile.coins, 605);
+  const improved = storage.recordTimeTrial("monaco", "TimePilot", 93000, [{ t: 0, x: 3, z: 4, yaw: 1 }]);
+  assert.equal(improved.isTrackRecord, true);
+  assert.equal(improved.isPersonalRecord, true);
+  assert.equal(improved.profile.coins, 680);
+
+  const restartedStorage = createStorage(dataDir, catalog);
+  assert.equal(restartedStorage.getTrackRecord("monaco", "TimePilot").bestLapMs, 93000);
+  assert.equal(restartedStorage.getTrackRecord("monaco", "TimePilot").samples[0].x, 3);
+});
+
 test("returns a public top-ten leaderboard ordered by points and wins", async () => {
   await game.close();
   const accounts = Array.from({ length: 12 }, (_, index) => ({
@@ -473,7 +584,8 @@ test("validates shop prices, purchases, and equipped inventory on the server", a
     body: { itemId: "color-red", price: 1 },
   });
   assert.equal(boughtPaint.response.status, 200);
-  assert.equal(boughtPaint.data.coins, 320);
+  assert.equal(boughtPaint.data.coins, 335);
+  assert.ok(boughtPaint.data.newlyUnlocked.some((achievement) => achievement.id === "first_purchase"));
   assert.ok(boughtPaint.data.inventory.includes("color-red"));
 
   const boughtPattern = await requestJson("/api/shop/buy", {
@@ -481,7 +593,7 @@ test("validates shop prices, purchases, and equipped inventory on the server", a
     token: account.token,
     body: { itemId: "camo-checker" },
   });
-  assert.equal(boughtPattern.data.coins, 40);
+  assert.equal(boughtPattern.data.coins, 55);
 
   const insufficient = await requestJson("/api/shop/buy", {
     method: "POST",
@@ -559,6 +671,142 @@ test("synchronizes account cosmetics and varied bot loadouts in race snapshots",
     assert.equal("accountUsername" in player, false);
     assert.ok(state.cars.filter((car) => car.isBot).every((car) => car.cosmetics));
     assert.ok(new Set(state.cars.filter((car) => car.isBot).map((car) => JSON.stringify(car.cosmetics))).size > 1);
+  } finally {
+    client.disconnect();
+  }
+});
+
+test("validates lap counts and keeps time trials to one human without bots", async () => {
+  const race = createClient(baseUrl, { transports: ["websocket"], reconnection: false });
+  try {
+    await connect(race);
+    const statePromise = waitForRaceState(race, (state) => state.cars.length === 1);
+    const joined = await new Promise((resolve) => {
+      race.emit("joinRace", {
+        name: "Vueltas",
+        maxPlayers: 2,
+        botsEnabled: false,
+        trackId: "monaco",
+        laps: 5,
+        difficulty: "hard",
+      }, resolve);
+    });
+    assert.equal(joined.ok, true);
+    const state = await statePromise;
+    assert.equal(state.totalLaps, 5);
+    assert.equal(state.difficulty, "hard");
+    assert.equal(state.mode, "race");
+  } finally {
+    race.disconnect();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  const invalidLapsClient = createClient(baseUrl, { transports: ["websocket"], reconnection: false });
+  try {
+    await connect(invalidLapsClient);
+    const invalid = await new Promise((resolve) => {
+      invalidLapsClient.emit("joinRace", { name: "Vueltas", laps: 2 }, resolve);
+    });
+    assert.equal(invalid.ok, false);
+    assert.match(invalid.error, /vueltas/i);
+  } finally {
+    invalidLapsClient.disconnect();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  const timeTrial = createClient(baseUrl, { transports: ["websocket"], reconnection: false });
+  const extra = createClient(baseUrl, { transports: ["websocket"], reconnection: false });
+  try {
+    await Promise.all([connect(timeTrial), connect(extra)]);
+    const statePromise = waitForRaceState(timeTrial, (state) => state.cars.length === 1);
+    const joined = await new Promise((resolve) => {
+      timeTrial.emit("joinRace", {
+        name: "Contrarreloj",
+        mode: "timeTrial",
+        maxPlayers: 8,
+        botsEnabled: true,
+        laps: 1,
+      }, resolve);
+    });
+    assert.equal(joined.ok, true);
+    const state = await statePromise;
+    assert.equal(state.mode, "timeTrial");
+    assert.equal(state.maxPlayers, 1);
+    assert.equal(state.botsEnabled, false);
+    assert.equal(state.totalLaps, 1);
+    const denied = await new Promise((resolve) => {
+      extra.emit("joinRace", { name: "Segundo" }, resolve);
+    });
+    assert.equal(denied.ok, false);
+  } finally {
+    timeTrial.disconnect();
+    extra.disconnect();
+  }
+});
+
+test("requires multiplayer readiness and keeps a local pause from freezing other drivers", async () => {
+  const host = createClient(baseUrl, { transports: ["websocket"], reconnection: false });
+  const guest = createClient(baseUrl, { transports: ["websocket"], reconnection: false });
+  try {
+    await Promise.all([connect(host), connect(guest)]);
+    const joinedHost = await new Promise((resolve) => {
+      host.emit("joinRace", { name: "Anfitrión", maxPlayers: 2, botsEnabled: false }, resolve);
+    });
+    const joinedGuest = await new Promise((resolve) => {
+      guest.emit("joinRace", { name: "Invitado" }, resolve);
+    });
+    assert.equal(joinedHost.ok, true);
+    assert.equal(joinedGuest.ok, true);
+    host.emit("startRace");
+    const blockedState = await waitForRaceState(host, (state) => state.phase === "lobby");
+    assert.equal(blockedState.phase, "lobby");
+
+    await Promise.all([
+      new Promise((resolve) => host.emit("toggleReady", resolve)),
+      new Promise((resolve) => guest.emit("toggleReady", resolve)),
+    ]);
+    const countdown = waitForRaceState(host, (state) => state.phase === "countdown");
+    host.emit("startRace");
+    await countdown;
+    await waitForRaceState(host, (state) => state.phase === "racing", 5000);
+
+    const pauseNotice = new Promise((resolve) => host.once("pauseNotice", resolve));
+    const pause = await new Promise((resolve) => host.emit("togglePause", resolve));
+    assert.equal(pause.ok, true);
+    assert.equal(pause.global, false);
+    assert.match((await pauseNotice).message, /continúa/);
+    const state = await waitForRaceState(host, (snapshot) => snapshot.phase === "racing");
+    assert.equal(state.phase, "racing");
+  } finally {
+    host.disconnect();
+    guest.disconnect();
+  }
+});
+
+test("pauses and resumes a solo race without advancing its clock", async () => {
+  const client = createClient(baseUrl, { transports: ["websocket"], reconnection: false });
+  try {
+    await connect(client);
+    const joined = await new Promise((resolve) => {
+      client.emit("joinRace", { name: "Solo", maxPlayers: 1, botsEnabled: false }, resolve);
+    });
+    assert.equal(joined.ok, true);
+    client.emit("startRace");
+    await waitForRaceState(client, (state) => state.phase === "racing", 5000);
+    const pause = await new Promise((resolve) => client.emit("togglePause", resolve));
+    assert.deepEqual({ ok: pause.ok, paused: pause.paused, global: pause.global }, {
+      ok: true, paused: true, global: true,
+    });
+    const paused = await waitForRaceState(client, (state) => state.phase === "paused");
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    const stillPaused = await waitForRaceState(
+      client,
+      (state) => state.phase === "paused" && state.raceElapsedMs === paused.raceElapsedMs
+    );
+    assert.equal(stillPaused.raceElapsedMs, paused.raceElapsedMs);
+    const resumed = await new Promise((resolve) => client.emit("togglePause", resolve));
+    assert.deepEqual({ ok: resumed.ok, paused: resumed.paused }, { ok: true, paused: false });
+    await waitForRaceState(client, (state) => state.phase === "racing", 5000);
   } finally {
     client.disconnect();
   }
@@ -697,7 +945,7 @@ test("places all eight starting cars inside the adapted road widths", async () =
       });
       assert.equal(joined.ok, true);
       const state = await statePromise;
-      assert.equal(state.track.width, trackId === "monaco" ? 11.5 : 14.5);
+      assert.equal(state.track.width, tracks[trackId].width);
       for (const car of state.cars) {
         const offset = getTrackOffset(state.track, car);
         assert.ok(offset.distance <= offset.width / 2 - 1.12 + 0.02, `${trackId}: ${car.name} is outside the road`);
