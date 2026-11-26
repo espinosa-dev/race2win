@@ -22,22 +22,32 @@
           <p class="eyebrow">MVP · TEMPORADA 01</p>
           <h1>Tu primera<br><span>vuelta empieza aquí.</span></h1>
           <p class="intro">Pisa el acelerador, adelanta a los bots y reta a tus amigos en la misma red.</p>
-          <div class="track-note"><span class="track-icon">↗</span><span><b>UN CIRCUITO</b><small>3 vueltas · carrera arcade</small></span></div>
+          <div class="track-note"><span class="track-icon">↗</span><span><b id="track-note-name">MONACO</b><small id="track-note-location">3 vueltas · Circuit de Monaco</small></span></div>
         </div>
         <form id="join-form" class="join-card">
           <div class="card-topline"><span>PREPARAR CARRERA</span><span class="card-number">01 / 01</span></div>
           <label for="driver-name">Nombre del piloto</label>
           <input id="driver-name" name="name" maxlength="16" placeholder="Tu apodo" autocomplete="nickname" value="Piloto" required>
-          <label for="bot-count">Rivales controlados por IA</label>
-          <select id="bot-count" name="botCount">
-            <option value="3" selected>3 bots</option>
-            <option value="1">1 bot</option>
-            <option value="2">2 bots</option>
-            <option value="4">4 bots</option>
-            <option value="5">5 bots</option>
-            <option value="6">6 bots</option>
-            <option value="7">7 bots</option>
+          <label for="track-select">Circuito</label>
+          <select id="track-select" name="trackId">
+            <option value="monaco" selected>Monaco · Montecarlo</option>
+            <option value="monza">Monza · Italia</option>
           </select>
+          <label for="max-players">Participantes (personas + bots)</label>
+          <select id="max-players" name="maxPlayers">
+            <option value="1">1 participante</option>
+            <option value="2">2 participantes</option>
+            <option value="3">3 participantes</option>
+            <option value="4" selected>4 participantes</option>
+            <option value="5">5 participantes</option>
+            <option value="6">6 participantes</option>
+            <option value="7">7 participantes</option>
+            <option value="8">8 participantes</option>
+          </select>
+          <label class="checkbox-label" for="bots-enabled">
+            <input id="bots-enabled" name="botsEnabled" type="checkbox" checked>
+            <span>Completar plazas vacías con bots</span>
+          </label>
           <button class="primary-button" type="submit">ENTRAR EN PISTA <span aria-hidden="true">→</span></button>
           <p class="form-error" id="join-error" role="alert"></p>
           <div class="lan-note"><span aria-hidden="true">⌁</span><span>¿Juegas en LAN? Comparte la dirección que aparece en la consola del servidor.</span></div>
@@ -69,7 +79,7 @@
           <ol id="standings-list"></ol>
         </aside>
         <div class="speedometer"><span id="speed-value">0</span><small>KM/H</small></div>
-        <div class="controls-hint">W / ↑ ACELERAR <i>·</i> S / ↓ FRENAR <i>·</i> A D / ← → GIRAR</div>
+        <div class="controls-hint">W / ↑ ACELERAR <i>·</i> S / ↓ FRENAR · PARADO: MANTENER PARA RETROCEDER <i>·</i> A D / ← → GIRAR</div>
         <div class="race-actions">
           <button id="start-button" class="primary-button is-hidden" type="button">EMPEZAR CARRERA <span aria-hidden="true">→</span></button>
           <button id="restart-button" class="primary-button is-hidden" type="button">OTRA CARRERA <span aria-hidden="true">↻</span></button>

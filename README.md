@@ -16,20 +16,22 @@ npm start
 
 Abre [http://localhost:3000](http://localhost:3000). Para jugar por red local, los demás participantes deben abrir la dirección de red que muestra el servidor al arrancar, por ejemplo `http://192.168.1.10:3000`. Todos los equipos deben estar en la misma red; el cortafuegos del anfitrión debe permitir conexiones a Node.js en redes privadas.
 
-La primera persona que entra crea la sala, elige cuántos bots añadir e inicia la carrera. Hasta ocho pilotos humanos pueden unirse antes de que empiece.
+La primera persona que entra crea la sala, elige el circuito, el aforo (hasta ocho participantes) y si los huecos libres se completan con bots. Los jugadores humanos que entren sustituyen bots mientras la sala siga abierta.
 
 ## Controles
 
 | Tecla | Acción |
 | --- | --- |
 | `W` o `↑` | Acelerar |
-| `S` o `↓` | Frenar |
+| `S` o `↓` | Frenar; mantener al detenerse para marcha atrás |
 | `A`/`D` o `←`/`→` | Girar |
 
 ## MVP actual
 
-- Circuito 3D original de tres vueltas.
+- Circuitos 3D inspirados en Monaco y Monza, de tres vueltas.
 - Bots y multijugador en red local.
+- Límite físico del mapa y de la simulación.
+- Vallado alrededor del circuito y colisiones entre coches.
 - Posiciones en directo, cronómetro, tiempos de llegada y diferencias.
 - Detección de vuelta y meta al cruzar la línea en el sentido correcto.
 - Coches y texturas generados para este proyecto.

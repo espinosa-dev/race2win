@@ -22,6 +22,8 @@ let socket;
 let playerId = null;
 let latestState = null;
 let sceneReady = false;
+let sceneTrackId = null;
+let renderLoopStarted = false;
 let lastSentInput = { throttle: 0, brake: 0, steer: 0 };
 let lastLeaderboardSignature = "";
 let lastLeaderboardUpdate = 0;
@@ -124,61 +126,59 @@ function makeTexture(baseColor, marks, seed, repeat = 1, surface = "asphalt") {
   return texture;
 }
 
-function addCircleLine(radius, color, y, segments = 180, dashed = false) {
-  const material = dashed
-    ? new THREE.LineDashedMaterial({ color, dashSize: 1.1, gapSize: 0.75, transparent: true, opacity: 0.8 })
-    : new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.8 });
-  const points = [];
-  for (let index = 0; index < segments; index += 1) {
-    const angle = (index / segments) * Math.PI * 2;
-    points.push(new THREE.Vector3(Math.cos(angle) * radius, y, Math.sin(angle) * radius));
-  }
-  const geometry = new THREE.BufferGeometry().setFromPoints(points);
-  const line = new THREE.LineLoop(geometry, material);
-  if (dashed) line.computeLineDistances();
-  scene.add(line);
-}
-
-function createTrees() {
-  const count = 48;
-  const trunks = new THREE.InstancedMesh(
-    new THREE.CylinderGeometry(0.18, 0.24, 1.2, 5),
-    new THREE.MeshStandardMaterial({ color: "#775238", flatShading: true }),
-    count
-  );
-  const foliage = [0, 1, 2].map((layer) => new THREE.InstancedMesh(
-    new THREE.ConeGeometry(1.05 - layer * 0.19, 1.45, 5),
-    new THREE.MeshStandardMaterial({ color: layer === 1 ? "#297967" : "#358b70", flatShading: true }),
-    count
-  ));
-  const matrix = new THREE.Matrix4();
-  const position = new THREE.Vector3();
-  const scaleVector = new THREE.Vector3();
-  const rotation = new THREE.Quaternion();
-
-  for (let index = 0; index < count; index += 1) {
-    const angle = index * 2.399;
-    const radius = 43 + (index % 4) * 6;
-    const scale = 0.75 + (index % 3) * 0.18;
-    const x = Math.cos(angle) * radius;
-    const z = Math.sin(angle) * radius;
-    scaleVector.setScalar(scale);
-    position.set(x, 0.6 * scale, z);
-    matrix.compose(position, rotation, scaleVector);
-    trunks.setMatrixAt(index, matrix);
-
-    for (let layer = 0; layer < foliage.length; layer += 1) {
-      position.set(x, (1.45 + layer * 0.78) * scale, z);
-      matrix.compose(position, rotation, scaleVector);
-      foliage[layer].setMatrixAt(index, matrix);
+function getTrackEdges(track) {
+  return track.points.map((point, index) => {
+    const previous = track.points[(index - 1 + track.points.length) % track.points.length];
+    const next = track.points[(index + 1) % track.points.length];
+    const incomingX = point[0] - previous[0];
+    const incomingZ = point[1] - previous[1];
+    const outgoingX = next[0] - point[0];
+    const outgoingZ = next[1] - point[1];
+    const incomingLength = Math.hypot(incomingX, incomingZ) || 1;
+    const outgoingLength = Math.hypot(outgoingX, outgoingZ) || 1;
+    const incomingNormalX = incomingZ / incomingLength;
+    const incomingNormalZ = -incomingX / incomingLength;
+    const outgoingNormalX = outgoingZ / outgoingLength;
+    const outgoingNormalZ = -outgoingX / outgoingLength;
+    let miterX = incomingNormalX + outgoingNormalX;
+    let miterZ = incomingNormalZ + outgoingNormalZ;
+    const miterLength = Math.hypot(miterX, miterZ);
+    if (miterLength < 1e-6) {
+      miterX = outgoingNormalX;
+      miterZ = outgoingNormalZ;
+    } else {
+      miterX /= miterLength;
+      miterZ /= miterLength;
     }
-  }
-
-  trunks.instanceMatrix.needsUpdate = true;
-  scene.add(trunks, ...foliage);
+    const halfWidth = track.width / 2;
+    const denominator = Math.max(
+      0.25,
+      Math.abs(miterX * outgoingNormalX + miterZ * outgoingNormalZ)
+    );
+    const offset = Math.min(halfWidth / denominator, halfWidth * 2.5);
+    const offsetX = miterX * offset;
+    const offsetZ = miterZ * offset;
+    return {
+      left: [point[0] + offsetX, point[1] + offsetZ],
+      right: [point[0] - offsetX, point[1] - offsetZ],
+    };
+  });
 }
 
-function createTrack() {
+function getTrackDistance(track, x, z) {
+  let minimum = Infinity;
+  for (let index = 0; index < track.points.length; index += 1) {
+    const start = track.points[index];
+    const end = track.points[(index + 1) % track.points.length];
+    const dx = end[0] - start[0];
+    const dz = end[1] - start[1];
+    const fraction = Math.max(0, Math.min(1, ((x - start[0]) * dx + (z - start[1]) * dz) / (dx * dx + dz * dz)));
+    minimum = Math.min(minimum, Math.hypot(x - start[0] - dx * fraction, z - start[1] - dz * fraction));
+  }
+  return minimum;
+}
+
+function createTrack(track) {
   scene.background = new THREE.Color("#a8d7dc");
   scene.fog = new THREE.Fog("#a8d7dc", 95, 190);
   const ambient = new THREE.HemisphereLight("#e3f6e8", "#536e5c", 2.1);
@@ -188,146 +188,133 @@ function createTrack() {
   scene.add(sun);
 
   const grassTexture = makeTexture("#72b982", ["#4fa676", "#97cb79", "#b2d27e", "#8dc988"], 28, 20, "grass");
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(230, 230),
-    new THREE.MeshStandardMaterial({ map: grassTexture, roughness: 1 })
-  );
+  const mapSize = track.bounds * 2 + 20;
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(mapSize, mapSize), new THREE.MeshStandardMaterial({ map: grassTexture, roughness: 1 }));
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.15;
   scene.add(ground);
 
-  const centerPatch = new THREE.Mesh(
-    new THREE.CircleGeometry(18.9, 100),
-    new THREE.MeshStandardMaterial({ color: "#94c97d", roughness: 1 })
-  );
-  centerPatch.rotation.x = -Math.PI / 2;
-  centerPatch.position.y = -0.04;
-  scene.add(centerPatch);
-
+  const edges = getTrackEdges(track);
+  const vertices = [];
+  const uvs = [];
+  const indices = [];
+  for (let index = 0; index < track.points.length; index += 1) {
+    const edge = edges[index];
+    vertices.push(edge.left[0], 0.025, edge.left[1], edge.right[0], 0.025, edge.right[1]);
+    uvs.push(0, index / 4, 1, index / 4);
+    const next = (index + 1) % track.points.length;
+    indices.push(index * 2, next * 2, index * 2 + 1, index * 2 + 1, next * 2, next * 2 + 1);
+  }
   const asphalt = makeTexture("#565f61", ["#70797a", "#40494c", "#838887", "#646e70"], 91, 8, "asphalt");
-  const road = new THREE.Mesh(
-    new THREE.RingGeometry(19, 34, 128),
-    new THREE.MeshStandardMaterial({ map: asphalt, roughness: 0.95, side: THREE.DoubleSide })
-  );
-  road.rotation.x = -Math.PI / 2;
-  road.position.y = 0.015;
+  const roadGeometry = new THREE.BufferGeometry();
+  roadGeometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+  roadGeometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  roadGeometry.setIndex(indices);
+  roadGeometry.computeVertexNormals();
+  const road = new THREE.Mesh(roadGeometry, new THREE.MeshStandardMaterial({ map: asphalt, roughness: 0.95, side: THREE.DoubleSide }));
   scene.add(road);
-  addCircleLine(19.2, "#f7f0dc", 0.09);
-  addCircleLine(33.8, "#f7f0dc", 0.09);
-  addCircleLine(26.5, "#e5d58b", 0.08, 180, true);
 
-  const barrierCount = 64;
+  for (const [edgeName, color] of [["left", "#f7f0dc"], ["right", "#f7f0dc"]]) {
+    const linePoints = edges.map((edge) => new THREE.Vector3(edge[edgeName][0], 0.1, edge[edgeName][1]));
+    scene.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(linePoints), new THREE.LineBasicMaterial({ color })));
+  }
   const barriers = new THREE.InstancedMesh(
-    new THREE.BoxGeometry(1.55, 0.72, 0.6),
+    new THREE.BoxGeometry(1, 1, 0.5),
     new THREE.MeshStandardMaterial({ color: "#f5eee0", flatShading: true }),
-    barrierCount
+    track.points.length * 2
   );
   const barrierMatrix = new THREE.Matrix4();
   const barrierPosition = new THREE.Vector3();
   const barrierRotation = new THREE.Quaternion();
-  const barrierScale = new THREE.Vector3(1, 1, 1);
-  for (let index = 0; index < barrierCount; index += 1) {
-    const angle = (index / 64) * Math.PI * 2;
-    const radius = 34.3;
-    barrierPosition.set(Math.cos(angle) * radius, 0.36, Math.sin(angle) * radius);
-    barrierRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -angle);
-    barrierMatrix.compose(barrierPosition, barrierRotation, barrierScale);
-    barriers.setMatrixAt(index, barrierMatrix);
-    barriers.setColorAt(index, new THREE.Color(index % 2 ? "#f5eee0" : "#e87662"));
+  const barrierScale = new THREE.Vector3();
+  let barrierIndex = 0;
+  for (const edgeName of ["left", "right"]) {
+    for (let index = 0; index < edges.length; index += 1) {
+      const startEdge = edges[index][edgeName];
+      const endEdge = edges[(index + 1) % edges.length][edgeName];
+      const dx = endEdge[0] - startEdge[0];
+      const dz = endEdge[1] - startEdge[1];
+      const length = Math.hypot(dx, dz);
+      if (length < 0.1) continue;
+      barrierPosition.set((startEdge[0] + endEdge[0]) / 2, 0.62, (startEdge[1] + endEdge[1]) / 2);
+      barrierRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(-dz, dx));
+      barrierScale.set(length, 1.24, 1);
+      barrierMatrix.compose(barrierPosition, barrierRotation, barrierScale);
+      barriers.setMatrixAt(barrierIndex, barrierMatrix);
+      barriers.setColorAt(barrierIndex, new THREE.Color(barrierIndex % 2 ? "#f5eee0" : "#e87662"));
+      barrierIndex += 1;
+    }
   }
+  barriers.count = barrierIndex;
   barriers.instanceMatrix.needsUpdate = true;
   if (barriers.instanceColor) barriers.instanceColor.needsUpdate = true;
   scene.add(barriers);
 
+  const limits = track.bounds;
+  const wallMaterial = new THREE.MeshStandardMaterial({ color: "#e87662", flatShading: true });
+  for (const [x, z, width, depth] of [
+    [0, -limits, mapSize, 0.8], [0, limits, mapSize, 0.8],
+    [-limits, 0, 0.8, mapSize], [limits, 0, 0.8, mapSize],
+  ]) {
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(width, 1.5, depth), wallMaterial);
+    wall.position.set(x, 0.75, z);
+    scene.add(wall);
+  }
+
+  const start = track.points[0];
+  const next = track.points[1];
+  const tangentX = next[0] - start[0];
+  const tangentZ = next[1] - start[1];
+  const tangentLength = Math.hypot(tangentX, tangentZ);
+  const normalX = -tangentZ / tangentLength;
+  const normalZ = tangentX / tangentLength;
   const startLine = new THREE.Group();
   const tileMaterialA = new THREE.MeshStandardMaterial({ color: "#fff8e4", flatShading: true });
   const tileMaterialB = new THREE.MeshStandardMaterial({ color: "#34474a", flatShading: true });
   for (let row = 0; row < 2; row += 1) {
-    for (let col = 0; col < 18; col += 1) {
+    for (let col = 0; col < 14; col += 1) {
       const tile = new THREE.Mesh(
-        new THREE.BoxGeometry(0.8, 0.07, 0.8),
+        new THREE.BoxGeometry(0.7, 0.07, 0.7),
         (row + col) % 2 ? tileMaterialA : tileMaterialB
       );
-      tile.position.set((row - 0.5) * 0.8, 0.1, -26 + (col - 8.5) * 0.83);
+      tile.position.set(
+        start[0] + tangentX / tangentLength * (row - 0.5) * 0.7 + normalX * (col - 6.5) * track.width / 14,
+        0.1,
+        start[1] + tangentZ / tangentLength * (row - 0.5) * 0.7 + normalZ * (col - 6.5) * track.width / 14
+      );
       startLine.add(tile);
     }
   }
   scene.add(startLine);
 
-  const island = new THREE.Mesh(
-    new THREE.CylinderGeometry(10.2, 10.5, 0.5, 9),
-    new THREE.MeshStandardMaterial({ color: "#80b873", flatShading: true })
-  );
-  island.position.y = 0.08;
-  scene.add(island);
-  const sign = new THREE.Group();
-  const signBoard = new THREE.Mesh(
-    new THREE.BoxGeometry(8, 2.4, 0.55),
-    new THREE.MeshStandardMaterial({ color: "#18393b", flatShading: true })
-  );
-  signBoard.position.y = 4;
-  signBoard.castShadow = true;
-  sign.add(signBoard);
-  const signAccent = new THREE.Mesh(
-    new THREE.BoxGeometry(6.7, 0.13, 0.59),
-    new THREE.MeshStandardMaterial({ color: "#30d6c1", emissive: "#0c574f", flatShading: true })
-  );
-  signAccent.position.set(0, 3.12, 0);
-  sign.add(signAccent);
-  for (const x of [-3.1, 3.1]) {
-    const post = new THREE.Mesh(
-      new THREE.BoxGeometry(0.22, 3.5, 0.24),
-      new THREE.MeshStandardMaterial({ color: "#efb256", flatShading: true })
+  const buildingBoxes = [];
+  for (let x = -limits + 8; x < limits; x += 13) {
+    for (let z = -limits + 8; z < limits; z += 13) {
+      if (getTrackDistance(track, x, z) < track.width / 2 + 7) continue;
+      buildingBoxes.push({ x, z, width: 5 + ((x * 7 + z * 3) % 3 + 3) % 3, depth: 5 + ((z * 5 + x) % 3 + 3) % 3, height: 3 + ((x * x + z * z) % 9) });
+    }
+  }
+  if (buildingBoxes.length) {
+    const buildings = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({ color: "#d7c6a9", flatShading: true }),
+      buildingBoxes.length
     );
-    post.position.set(x, 1.8, 0);
-    sign.add(post);
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    const rotation = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    buildingBoxes.forEach((building, index) => {
+      position.set(building.x, building.height / 2, building.z);
+      scale.set(building.width, building.height, building.depth);
+      matrix.compose(position, rotation, scale);
+      buildings.setMatrixAt(index, matrix);
+      buildings.setColorAt(index, new THREE.Color(["#d7c6a9", "#c5d0ca", "#d9b8a5", "#a9b8b2"][index % 4]));
+    });
+    buildings.instanceMatrix.needsUpdate = true;
+    if (buildings.instanceColor) buildings.instanceColor.needsUpdate = true;
+    scene.add(buildings);
   }
-  sign.position.set(0, 0, 0);
-  sign.rotation.y = 0;
-  scene.add(sign);
-
-  const flowerColors = ["#f1bd61", "#e98773", "#f2e9bf"];
-  const flowerCount = 24;
-  const flowers = new THREE.InstancedMesh(
-    new THREE.IcosahedronGeometry(0.28, 0),
-    new THREE.MeshStandardMaterial({ color: "#f1bd61", flatShading: true }),
-    flowerCount
-  );
-  const flowerMatrix = new THREE.Matrix4();
-  const flowerPosition = new THREE.Vector3();
-  const flowerScale = new THREE.Vector3();
-  for (let index = 0; index < flowerCount; index += 1) {
-    const angle = index * 2.399;
-    const radius = 3 + (index % 5) * 1.2;
-    const size = 0.8 + (index % 3) * 0.28;
-    flowerPosition.set(Math.cos(angle) * radius, 0.45, Math.sin(angle) * radius);
-    flowerScale.setScalar(size);
-    flowerMatrix.compose(flowerPosition, new THREE.Quaternion(), flowerScale);
-    flowers.setMatrixAt(index, flowerMatrix);
-    flowers.setColorAt(index, new THREE.Color(flowerColors[index % flowerColors.length]));
-  }
-  flowers.instanceMatrix.needsUpdate = true;
-  if (flowers.instanceColor) flowers.instanceColor.needsUpdate = true;
-  scene.add(flowers);
-
-  createTrees();
-
-  const startPost = new THREE.Group();
-  for (const z of [-18.8, -33.2]) {
-    const post = new THREE.Mesh(
-      new THREE.BoxGeometry(0.38, 4.2, 0.45),
-      new THREE.MeshStandardMaterial({ color: "#f0ac51", flatShading: true })
-    );
-    post.position.set(0, 2.1, z);
-    startPost.add(post);
-  }
-  const banner = new THREE.Mesh(
-    new THREE.BoxGeometry(0.5, 0.5, 14.5),
-    new THREE.MeshStandardMaterial({ color: "#183b3b", flatShading: true })
-  );
-  banner.position.set(0, 4.1, -26);
-  startPost.add(banner);
-  scene.add(startPost);
 }
 
 function createCar(color) {
@@ -417,12 +404,18 @@ function renderFrame() {
   renderer.render(scene, camera);
 }
 
-function initializeScene() {
-  if (sceneReady) return;
+function initializeScene(track) {
+  if (sceneReady && sceneTrackId === track.id) return;
+  scene.clear();
+  carViews.clear();
   sceneReady = true;
-  createTrack();
+  sceneTrackId = track.id;
+  createTrack(track);
   resizeRenderer();
-  renderFrame();
+  if (!renderLoopStarted) {
+    renderLoopStarted = true;
+    renderFrame();
+  }
 }
 
 function updateLeaderboard(cars) {
@@ -477,7 +470,7 @@ function onRaceState(state) {
   raceClockSyncAt = performance.now();
   raceClockRunning = state.phase === "racing";
   if (state.phase !== previousPhase) readControls();
-  initializeScene();
+  initializeScene(state.track);
   const seenIds = new Set();
   for (const car of state.cars) {
     seenIds.add(car.id);
@@ -495,7 +488,7 @@ function onRaceState(state) {
     carView.targetPosition.set(car.x, 0, car.z);
     carView.targetYaw = car.yaw;
     if (car.id === playerId) {
-      document.querySelector("#speed-value").textContent = String(Math.round(car.speed * 5.3)).padStart(2, "0");
+      document.querySelector("#speed-value").textContent = `${car.speed < -0.1 ? "R" : ""}${String(Math.round(Math.abs(car.speed) * 5.3)).padStart(2, "0")}`;
       document.querySelector("#lap-number").textContent = String(car.lap);
       document.querySelector("#place-number").textContent = String(car.place);
       document.querySelector("#place-suffix").textContent = car.place === 1 ? "º" : "º";
@@ -562,7 +555,9 @@ joinForm.addEventListener("submit", (event) => {
     connectionLabel.textContent = "CONECTADO";
     socket.emit("joinRace", {
       name: formData.get("name"),
-      botCount: Number(formData.get("botCount")),
+      maxPlayers: Number(formData.get("maxPlayers")),
+      botsEnabled: formData.get("botsEnabled") === "on",
+      trackId: formData.get("trackId"),
     }, (result) => {
       if (!result?.ok) {
         joinError.textContent = result?.error || "No se pudo entrar en la sala.";
@@ -580,6 +575,12 @@ joinForm.addEventListener("submit", (event) => {
     joinError.textContent = "No se pudo conectar con el servidor local.";
   });
   socket.on("raceState", onRaceState);
+});
+
+document.querySelector("#track-select").addEventListener("change", (event) => {
+  const selected = event.currentTarget.selectedOptions[0];
+  document.querySelector("#track-note-name").textContent = selected.value.toUpperCase();
+  document.querySelector("#track-note-location").textContent = selected.textContent.split("·")[1].trim();
 });
 
 startButton.addEventListener("click", () => socket?.emit("startRace"));

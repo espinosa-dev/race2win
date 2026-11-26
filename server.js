@@ -1,28 +1,54 @@
 const os = require("node:os");
 const path = require("node:path");
+const fs = require("node:fs");
 const express = require("express");
 const http = require("node:http");
 const { Server } = require("socket.io");
 
 const PORT = Number(process.env.PORT) || 3000;
 const TOTAL_LAPS = 3;
-const TRACK_RADIUS = 26;
-const STEERING_RADIUS = 21.5;
+const MAX_PLAYERS = 8;
+const STEERING_RADIUS = 7;
 const STEERING_RESPONSE = 8.5;
-const START_ANGLE = -Math.PI / 2;
-const FULL_TURN = Math.PI * 2;
-const MAX_HUMAN_PLAYERS = 8;
+const CAR_COLLISION_RADIUS = 1.6;
+const MAX_REVERSE_SPEED = 5;
+const REVERSE_ACCELERATION = 7;
+const DEFAULT_TRACK_ID = "monaco";
 const BOT_NAMES = ["Chispa", "Turbo", "Pistón", "Rayo", "Choco", "Nube", "Trueno"];
 const CAR_COLORS = ["#30d6c1", "#ffb94b", "#ff6978", "#8a7cff", "#d9ed63", "#54a9ff", "#ff8ccc", "#f7f3e8"];
+const TRACKS = JSON.parse(fs.readFileSync(path.join(__dirname, "public", "tracks.json"), "utf8"));
+
+function prepareTrack(track) {
+  const points = [
+    ...track.points.slice(track.startIndex),
+    ...track.points.slice(0, track.startIndex),
+  ];
+  const segments = points.map((point, index) => {
+    const next = points[(index + 1) % points.length];
+    const dx = next[0] - point[0];
+    const dz = next[1] - point[1];
+    return {
+      x: point[0],
+      z: point[1],
+      dx,
+      dz,
+      length: Math.hypot(dx, dz),
+    };
+  });
+  let length = 0;
+  for (const segment of segments) {
+    segment.start = length;
+    length += segment.length;
+  }
+  return { ...track, points, segments, length };
+}
+
+const PREPARED_TRACKS = Object.fromEntries(
+  Object.entries(TRACKS).map(([id, track]) => [id, prepareTrack(track)])
+);
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
-}
-
-function wrapAngle(angle) {
-  while (angle > Math.PI) angle -= Math.PI * 2;
-  while (angle < -Math.PI) angle += Math.PI * 2;
-  return angle;
 }
 
 function getLanAddresses() {
@@ -56,15 +82,121 @@ function getCrossingTimeMs(previousProgress, currentProgress, finishProgress, ti
   return tickEndTime - (1 - crossing) * tickDuration * 1000;
 }
 
-function crossedStartLine(previousAngle, currentAngle) {
-  const angleChange = wrapAngle(currentAngle - previousAngle);
-  const previousOffset = wrapAngle(previousAngle - START_ANGLE);
-  const currentOffset = wrapAngle(currentAngle - START_ANGLE);
-  return angleChange > 0 && previousOffset < 0 && currentOffset >= 0;
+function wrapAngle(angle) {
+  while (angle > Math.PI) angle -= Math.PI * 2;
+  while (angle < -Math.PI) angle += Math.PI * 2;
+  return angle;
 }
 
-function isFinishCrossing(currentProgress, finishProgress, previousAngle, currentAngle) {
-  return currentProgress >= finishProgress && crossedStartLine(previousAngle, currentAngle);
+function areHumanDriversFinished(cars) {
+  const humans = [...cars].filter((car) => !car.isBot);
+  return humans.length > 0 && humans.every((car) => car.finishedAt !== null);
+}
+
+function constrainCarToMap(car, track) {
+  const inside = Math.abs(car.x) <= track.bounds && Math.abs(car.z) <= track.bounds;
+  if (!inside) {
+    car.x = clamp(car.x, -track.bounds, track.bounds);
+    car.z = clamp(car.z, -track.bounds, track.bounds);
+    car.speed = 0;
+  }
+  return inside;
+}
+
+function constrainCarToTrack(car, track) {
+  const projection = projectToTrack(track, car.x, car.z);
+  const maxOffset = Math.max(0, track.width / 2 - CAR_COLLISION_RADIUS * 0.7);
+  const distance = Math.sqrt(projection.distanceSquared);
+  if (distance > maxOffset) {
+    const scale = maxOffset / distance;
+    car.x = projection.x + (car.x - projection.x) * scale;
+    car.z = projection.z + (car.z - projection.z) * scale;
+    car.speed *= 0.35;
+  }
+  return projection;
+}
+
+function resolveCarCollisions(cars) {
+  const activeCars = [...cars].filter((car) => car.finishedAt === null);
+  const minimumDistance = CAR_COLLISION_RADIUS * 2;
+  for (let firstIndex = 0; firstIndex < activeCars.length; firstIndex += 1) {
+    for (let secondIndex = firstIndex + 1; secondIndex < activeCars.length; secondIndex += 1) {
+      const first = activeCars[firstIndex];
+      const second = activeCars[secondIndex];
+      let dx = second.x - first.x;
+      let dz = second.z - first.z;
+      let distance = Math.hypot(dx, dz);
+      if (distance >= minimumDistance) continue;
+      if (distance < 1e-6) {
+        dx = first.id.localeCompare(second.id) < 0 ? 1 : -1;
+        dz = 0;
+        distance = 1;
+      }
+
+      const normalX = dx / distance;
+      const normalZ = dz / distance;
+      const overlap = minimumDistance - distance;
+      first.x -= normalX * overlap / 2;
+      first.z -= normalZ * overlap / 2;
+      second.x += normalX * overlap / 2;
+      second.z += normalZ * overlap / 2;
+
+      const firstVelocityX = -Math.sin(first.yaw) * first.speed;
+      const firstVelocityZ = -Math.cos(first.yaw) * first.speed;
+      const secondVelocityX = -Math.sin(second.yaw) * second.speed;
+      const secondVelocityZ = -Math.cos(second.yaw) * second.speed;
+      const relativeSpeed = (secondVelocityX - firstVelocityX) * normalX
+        + (secondVelocityZ - firstVelocityZ) * normalZ;
+      if (relativeSpeed >= 0) continue;
+
+      const impulse = -(1.25 * relativeSpeed) / 2;
+      const firstAfterX = firstVelocityX - impulse * normalX;
+      const firstAfterZ = firstVelocityZ - impulse * normalZ;
+      const secondAfterX = secondVelocityX + impulse * normalX;
+      const secondAfterZ = secondVelocityZ + impulse * normalZ;
+      first.speed = Math.hypot(firstAfterX, firstAfterZ);
+      second.speed = Math.hypot(secondAfterX, secondAfterZ);
+      if (first.speed > 0.1) first.yaw = Math.atan2(-firstAfterX, -firstAfterZ);
+      if (second.speed > 0.1) second.yaw = Math.atan2(-secondAfterX, -secondAfterZ);
+    }
+  }
+}
+
+function getTrackPosition(track, distance) {
+  const wrappedDistance = (distance % track.length + track.length) % track.length;
+  const segment = track.segments.find((entry) => wrappedDistance <= entry.start + entry.length)
+    || track.segments[track.segments.length - 1];
+  const fraction = (wrappedDistance - segment.start) / segment.length;
+  return {
+    x: segment.x + segment.dx * fraction,
+    z: segment.z + segment.dz * fraction,
+    tangentX: segment.dx / segment.length,
+    tangentZ: segment.dz / segment.length,
+    distance: wrappedDistance,
+  };
+}
+
+function projectToTrack(track, x, z) {
+  let nearest = null;
+  for (const segment of track.segments) {
+    const fraction = clamp(
+      ((x - segment.x) * segment.dx + (z - segment.z) * segment.dz) / (segment.length ** 2),
+      0,
+      1
+    );
+    const projectedX = segment.x + segment.dx * fraction;
+    const projectedZ = segment.z + segment.dz * fraction;
+    const distanceSquared = (x - projectedX) ** 2 + (z - projectedZ) ** 2;
+    if (!nearest || distanceSquared < nearest.distanceSquared) {
+      nearest = {
+        distance: segment.start + segment.length * fraction,
+        distanceSquared,
+        x: projectedX,
+        z: projectedZ,
+      };
+    }
+  }
+  return nearest;
 }
 
 function createGameServer() {
@@ -74,6 +206,8 @@ function createGameServer() {
   const cars = new Map();
   let hostId = null;
   let phase = "lobby";
+  let raceSettings = { maxPlayers: MAX_PLAYERS, botsEnabled: false, trackId: DEFAULT_TRACK_ID };
+  let nextBotId = 1;
   let countdownEndsAt = 0;
   let raceStartedAt = 0;
   let lastTick = Date.now();
@@ -92,41 +226,58 @@ function createGameServer() {
   app.get("/healthz", (req, res) => res.json({ ok: true }));
 
   function makeCar({ id, name, color, isBot = false }) {
+    const track = PREPARED_TRACKS[raceSettings.trackId];
     const gridIndex = cars.size;
-    const theta = START_ANGLE - Math.floor(gridIndex / 2) * 0.2;
-    const radius = TRACK_RADIUS + (gridIndex % 2 === 0 ? -3.4 : 3.4);
-    const distanceToStartLine = ((START_ANGLE - theta) % FULL_TURN + FULL_TURN) % FULL_TURN;
+    const startDistance = 4 + Math.floor(gridIndex / 2) * 4.5;
+    const gridPosition = getTrackPosition(track, track.length - startDistance);
+    const laneOffset = (gridIndex % 2 === 0 ? -1 : 1) * Math.min(track.width * 0.25, 2.2);
+    const normalX = -gridPosition.tangentZ;
+    const normalZ = gridPosition.tangentX;
     return {
       id,
       name,
       color,
       isBot,
-      x: Math.cos(theta) * radius,
-      z: Math.sin(theta) * radius,
-      yaw: Math.PI - theta,
+      x: gridPosition.x + normalX * laneOffset,
+      z: gridPosition.z + normalZ * laneOffset,
+      yaw: Math.atan2(-gridPosition.tangentX, -gridPosition.tangentZ),
       speed: 0,
       steering: 0,
       input: { throttle: 0, brake: 0, steer: 0 },
-      lastAngle: theta,
+      lastTrackDistance: gridPosition.distance,
       progress: 0,
       lapsCompleted: 0,
-      finishProgress: TOTAL_LAPS * FULL_TURN + distanceToStartLine,
+      finishProgress: TOTAL_LAPS * track.length + startDistance,
       finishedAt: null,
     };
   }
 
-  function addBots(count) {
-    for (let index = 0; index < count; index += 1) {
-      const name = BOT_NAMES[index % BOT_NAMES.length];
-      const id = `bot-${index + 1}`;
+  function syncBots() {
+    const humans = [...cars.values()].filter((car) => !car.isBot).length;
+    const targetBots = raceSettings.botsEnabled ? raceSettings.maxPlayers - humans : 0;
+    const existingBots = [...cars.values()].filter((car) => car.isBot);
+    while (existingBots.length > targetBots) {
+      cars.delete(existingBots.pop().id);
+    }
+    while (existingBots.length < targetBots) {
+      const index = nextBotId++;
+      const name = BOT_NAMES[(index - 1) % BOT_NAMES.length];
+      const id = `bot-${index}`;
       const bot = makeCar({
         id,
         name,
-        color: CAR_COLORS[(index + 1) % CAR_COLORS.length],
+        color: CAR_COLORS[index % CAR_COLORS.length],
         isBot: true,
       });
       cars.set(id, bot);
+      existingBots.push(bot);
     }
+  }
+
+  function regridLobbyCars() {
+    const existingCars = [...cars.values()];
+    cars.clear();
+    for (const car of existingCars) cars.set(car.id, makeCar(car));
   }
 
   function getStandings() {
@@ -150,6 +301,12 @@ function createGameServer() {
       phase,
       hostId,
       totalLaps: TOTAL_LAPS,
+      track: {
+        ...TRACKS[raceSettings.trackId],
+        points: PREPARED_TRACKS[raceSettings.trackId].points,
+      },
+      maxPlayers: raceSettings.maxPlayers,
+      botsEnabled: raceSettings.botsEnabled,
       raceElapsedMs: raceStartedAt > 0 && (phase === "racing" || phase === "finished")
         ? Math.max(0, raceEndAt - raceStartedAt)
         : 0,
@@ -182,27 +339,39 @@ function createGameServer() {
   }
 
   function updateCar(car, dt) {
-    const radius = Math.hypot(car.x, car.z);
+    const track = PREPARED_TRACKS[raceSettings.trackId];
+    const projection = projectToTrack(track, car.x, car.z);
+    const distanceFromTrack = Math.sqrt(projection.distanceSquared);
     if (car.isBot) {
-      const theta = Math.atan2(car.z, car.x);
-      const desiredYaw = Math.PI - theta;
+      const target = getTrackPosition(track, projection.distance + 7);
+      const desiredYaw = Math.atan2(-(target.x - car.x), -(target.z - car.z));
       const headingError = wrapAngle(desiredYaw - car.yaw);
       car.input = {
         throttle: 1,
         brake: 0,
-        steer: clamp(0.78 + (radius - TRACK_RADIUS) * 0.12 - headingError * 1.1, -1, 1),
+        steer: clamp(-headingError * 1.8, -1, 1),
       };
     }
 
-    const onTrack = radius >= 18.5 && radius <= 34;
-    const maxSpeed = onTrack ? 19 : 9;
+    const onTrack = distanceFromTrack <= track.width * 0.75;
+    const maxSpeed = onTrack ? 18 : 8;
     const acceleration = onTrack ? 11 : 6;
     if (car.input.brake > 0) {
-      car.speed = Math.max(0, car.speed - 18 * car.input.brake * dt);
+      if (car.speed > 0) {
+        car.speed = Math.max(0, car.speed - 18 * car.input.brake * dt);
+      } else {
+        car.speed = Math.max(-MAX_REVERSE_SPEED, car.speed - REVERSE_ACCELERATION * car.input.brake * dt);
+      }
     } else if (car.input.throttle > 0) {
-      car.speed = Math.min(maxSpeed, car.speed + acceleration * car.input.throttle * dt);
-    } else {
+      if (car.speed < 0) {
+        car.speed = Math.min(0, car.speed + 18 * car.input.throttle * dt);
+      } else {
+        car.speed = Math.min(maxSpeed, car.speed + acceleration * car.input.throttle * dt);
+      }
+    } else if (car.speed > 0) {
       car.speed = Math.max(0, car.speed - 2.8 * dt);
+    } else {
+      car.speed = Math.min(0, car.speed + 2.8 * dt);
     }
 
     car.steering += clamp(
@@ -217,10 +386,13 @@ function createGameServer() {
       car.z -= Math.cos(car.yaw) * car.speed * dt;
     }
 
-    const angle = Math.atan2(car.z, car.x);
-    const angleChange = wrapAngle(angle - car.lastAngle);
-    car.progress = Math.max(0, car.progress + angleChange);
-    car.lastAngle = angle;
+    constrainCarToMap(car, track);
+    const nextProjection = constrainCarToTrack(car, track);
+    let distanceDelta = nextProjection.distance - car.lastTrackDistance;
+    if (distanceDelta < -track.length / 2) distanceDelta += track.length;
+    if (distanceDelta > track.length / 2) distanceDelta -= track.length;
+    car.progress = Math.max(0, car.progress + Math.max(0, distanceDelta));
+    car.lastTrackDistance = nextProjection.distance;
   }
 
   const tick = setInterval(() => {
@@ -237,20 +409,23 @@ function createGameServer() {
       for (const car of cars.values()) {
         if (car.finishedAt !== null) continue;
         const previousProgress = car.progress;
-        const previousAngle = car.lastAngle;
         updateCar(car, dt);
-        const crossedLine = crossedStartLine(previousAngle, car.lastAngle);
-        if (crossedLine) {
-          car.lapsCompleted = Math.max(
-            car.lapsCompleted,
-            Math.min(TOTAL_LAPS, Math.floor((car.progress + 1e-6) / FULL_TURN))
-          );
-        }
-        if (isFinishCrossing(car.progress, car.finishProgress, previousAngle, car.lastAngle)) {
+        car.lapsCompleted = Math.max(
+          car.lapsCompleted,
+          Math.min(TOTAL_LAPS, Math.floor((car.progress + 1e-6) / PREPARED_TRACKS[raceSettings.trackId].length))
+        );
+        if (car.progress >= car.finishProgress) {
           car.finishedAt = getCrossingTimeMs(previousProgress, car.progress, car.finishProgress, now, dt);
         }
       }
-      if ([...cars.values()].every((car) => car.finishedAt !== null)) phase = "finished";
+      resolveCarCollisions(cars.values());
+      for (const car of cars.values()) {
+        if (car.finishedAt !== null) continue;
+        constrainCarToMap(car, PREPARED_TRACKS[raceSettings.trackId]);
+        const projection = constrainCarToTrack(car, PREPARED_TRACKS[raceSettings.trackId]);
+        car.lastTrackDistance = projection.distance;
+      }
+      if (areHumanDriversFinished(cars.values())) phase = "finished";
     }
     if (now - lastBroadcastAt >= 100) broadcastState(now);
   }, 50);
@@ -266,12 +441,38 @@ function createGameServer() {
         return;
       }
       const humanCount = [...cars.values()].filter((car) => !car.isBot).length;
-      if (humanCount >= MAX_HUMAN_PLAYERS) {
+      if (humanCount >= raceSettings.maxPlayers) {
         acknowledge({ ok: false, error: "La sala está completa." });
         return;
       }
 
       const name = String(payload.name || "Piloto").trim().slice(0, 16) || "Piloto";
+      if (!hostId) {
+        const hasNewSettings = payload.maxPlayers !== undefined || payload.botsEnabled !== undefined;
+        const legacyBotCount = clamp(Math.round(Number(payload.botCount) || 0), 0, MAX_PLAYERS - 1);
+        const requestedMaxPlayers = hasNewSettings
+          ? Number(payload.maxPlayers)
+          : legacyBotCount + 1;
+        const trackId = String(payload.trackId || DEFAULT_TRACK_ID);
+        if (!Number.isInteger(requestedMaxPlayers) || requestedMaxPlayers < 1 || requestedMaxPlayers > MAX_PLAYERS) {
+          acknowledge({ ok: false, error: "El número de participantes debe estar entre 1 y 8." });
+          return;
+        }
+        if (!PREPARED_TRACKS[trackId]) {
+          acknowledge({ ok: false, error: "El circuito seleccionado no está disponible." });
+          return;
+        }
+        raceSettings = {
+          maxPlayers: requestedMaxPlayers,
+          botsEnabled: hasNewSettings ? payload.botsEnabled === true : legacyBotCount > 0,
+          trackId,
+        };
+      }
+      if (hostId && raceSettings.botsEnabled) {
+        const replaceableBot = [...cars.values()].find((car) => car.isBot);
+        if (replaceableBot) cars.delete(replaceableBot.id);
+        regridLobbyCars();
+      }
       const human = makeCar({
         id: socket.id,
         name,
@@ -280,8 +481,8 @@ function createGameServer() {
       cars.set(socket.id, human);
       if (!hostId) {
         hostId = socket.id;
-        addBots(clamp(Math.round(Number(payload.botCount) || 0), 0, BOT_NAMES.length));
       }
+      syncBots();
       acknowledge({ ok: true, id: socket.id });
       broadcastState();
     });
@@ -311,6 +512,7 @@ function createGameServer() {
       for (const car of existingCars) {
         cars.set(car.id, makeCar(car));
       }
+      syncBots();
       phase = "lobby";
       countdownEndsAt = 0;
       raceStartedAt = 0;
@@ -324,10 +526,19 @@ function createGameServer() {
         cars.clear();
         hostId = null;
         phase = "lobby";
+        raceSettings = { maxPlayers: MAX_PLAYERS, botsEnabled: false, trackId: DEFAULT_TRACK_ID };
+        nextBotId = 1;
         countdownEndsAt = 0;
         raceStartedAt = 0;
       } else if (hostId === socket.id) {
         hostId = remainingHumans[0].id;
+        if (phase === "lobby") {
+          regridLobbyCars();
+          syncBots();
+        }
+      } else if (phase === "lobby") {
+        regridLobbyCars();
+        syncBots();
       }
       broadcastState();
     });
@@ -353,7 +564,10 @@ if (require.main === module) {
 
 module.exports = {
   createGameServer,
+  areHumanDriversFinished,
+  constrainCarToMap,
+  constrainCarToTrack,
   getCrossingTimeMs,
   getFinishTiming,
-  isFinishCrossing,
+  resolveCarCollisions,
 };
