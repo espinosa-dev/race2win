@@ -543,36 +543,47 @@ button { cursor: pointer; }
 .lobby-step-actions .primary-button { width: min(400px, 52%); min-height: 54px; margin: 0; font-size: 13px; }
 .lobby-step-actions .quiet-button { min-height: 44px; font-size: 12px; }
 .rules-layout { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(340px, .9fr); gap: 14px; }
-.join-card { gap: 2px; padding: 17px 19px; }
+.join-card {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 8px;
+  padding: 14px 17px;
+}
+.join-card > :is(.card-topline, .race-config-summary, .pilot-name-field, .pilot-name-note, .race-options, .participants-control, .bots-difficulty-controls, .join-action-row, .form-error, .lan-copy-status) { grid-column: 1 / -1; }
 .card-topline { margin-bottom: 10px; font-size: 12px; }
-.join-card > label:not(.bots-switch) { margin: 9px 0 6px; font-size: 12px; }
-.join-card input:not([type="hidden"]) { height: 42px; padding: 0 12px; font-size: 14px; }
+.pilot-name-field > label { display: block; margin: 0 0 5px; color: #aebfb7; font: 12px "DM Mono", Consolas, monospace; letter-spacing: .1em; }
+.join-card input:not([type="hidden"]) { height: 40px; padding: 0 12px; font-size: 14px; }
 .pilot-name-note { min-height: 16px; margin-top: 5px; font: 12px "DM Mono", Consolas, monospace; }
-.race-config-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border: 1px solid rgba(48, 214, 193, .27); color: var(--teal); background: rgba(48, 214, 193, .06); font: 12px "DM Mono", Consolas, monospace; }
+.race-config-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid rgba(48, 214, 193, .27); color: var(--teal); background: rgba(48, 214, 193, .06); font: 12px "DM Mono", Consolas, monospace; }
 .race-config-summary button { padding: 7px 9px; border: 1px solid rgba(48, 214, 193, .3); color: #c1d5cc; background: transparent; font: inherit; }
-.race-options { gap: 12px; margin-top: 10px; }
+.race-options { gap: 12px; margin-top: 0; }
 .option-label { margin-bottom: 7px; color: #a2b7ad; font: 12px "DM Mono", Consolas, monospace; }
 .option-pills { gap: 7px; }
 .option-pill, .difficulty-pill { min-height: 44px; padding: 8px 12px; font: 12px "DM Mono", Consolas, monospace; }
 .lap-pills .option-pill { font-size: 16px; }
-.participants-heading { margin: 14px 0 7px; font: 12px "DM Mono", Consolas, monospace; }
+.participants-control { display: grid; grid-template-columns: minmax(130px, .34fr) minmax(0, 1fr); align-items: center; gap: 12px; }
+.participants-heading { margin: 0; font: 12px "DM Mono", Consolas, monospace; }
 .participants-heading b { font-size: 14px; }
 .participant-pills { gap: 7px; }
 .participant-pill { height: 44px; font-size: 14px; }
-.bots-switch { min-height: 42px; gap: 11px; margin-top: 11px !important; font: 12px "DM Mono", Consolas, monospace !important; }
+.bots-difficulty-controls { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); align-items: center; gap: 12px; }
+.bots-switch { min-height: 42px; gap: 11px; margin: 0 !important; font: 12px "DM Mono", Consolas, monospace !important; }
 .switch-indicator { width: 36px; height: 20px; }
 .switch-indicator::after { width: 12px; height: 12px; }
 .bots-switch input:checked + .switch-indicator::after { left: 20px; }
 .difficulty-row { gap: 8px; margin-top: 6px; }
 .difficulty-row > span { font: 12px "DM Mono", Consolas, monospace; }
-.difficulty-pill { min-height: 38px; }
-.join-card .primary-button { min-height: 56px; margin-top: 15px; font-size: 14px; }
-.form-error { min-height: 15px; font-size: 12px; }
-.lan-invite { margin-top: 8px; padding-top: 10px; }
+.difficulty-pill { min-height: 44px; }
+.join-action-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 12px; }
+.join-card .primary-button { min-height: 54px; margin: 0; font-size: 14px; }
+.form-error { min-height: 0; margin: 0; font-size: 12px; }
+.form-error:empty, .lan-copy-status:empty { display: none; }
+.lan-invite { min-height: 54px; align-items: center; margin: 0; padding: 6px 8px; }
 .lan-invite small { font-size: 11px; }
 .lan-invite a { font-size: 12px; }
-.lan-invite button { min-height: 40px; padding: 8px 11px; font-size: 11px; }
-.lan-copy-status { min-height: 14px; font-size: 11px; }
+.lan-invite button { min-height: 44px; padding: 8px 11px; font-size: 12px; }
+.lan-copy-status { min-height: 0; margin: 0; font-size: 12px; }
 .pilot-side { display: grid; grid-template-rows: auto minmax(170px, 1fr); gap: 12px; }
 .pilot-panel { padding: 18px; }
 .pilot-panel-heading { font-size: 12px; }
@@ -618,7 +629,11 @@ button { cursor: pointer; }
   .showroom-stage { min-height: 220px; }
   .loadout-strip { gap: 10px; }
   .rules-layout { gap: 10px; }
-  .join-card { padding: 14px; }
+  .join-card { grid-template-columns: 1fr; padding: 14px; }
+  .participants-control, .bots-difficulty-controls, .join-action-row { grid-template-columns: 1fr; }
+  .participants-heading { display: flex; justify-content: space-between; }
+  .difficulty-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 0; }
+  .difficulty-row > span { grid-column: 1 / -1; }
   .option-pill, .difficulty-pill { min-height: 44px; }
   .participant-pill { height: 44px; }
   .pilot-side { grid-template-columns: 1fr; }
@@ -658,6 +673,11 @@ button { cursor: pointer; }
   .pilot-panel { padding: 13px; }
   .global-rank-panel { padding: 12px 14px; }
   .pilot-side { grid-template-rows: auto minmax(145px, 1fr); }
+}
+
+@media (min-width: 761px) and (max-height: 760px) {
+  .footer { display: none; }
+  .join-screen { padding-bottom: 2px; }
 }
 
 #join-screen .paddock-heading .eyebrow,

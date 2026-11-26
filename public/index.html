@@ -101,8 +101,10 @@
               <form id="join-form" class="join-card">
                 <div class="card-topline"><span>CONFIGURA LA CARRERA</span><span class="card-number">GRID</span></div>
                 <div class="race-config-summary"><span id="race-config-summary">MONACO · SOLEADO</span><button type="button" data-prev-step="environment">CAMBIAR CIRCUITO / CLIMA</button></div>
-                <label for="driver-name">NOMBRE DEL PILOTO</label>
-                <input id="driver-name" name="name" maxlength="16" placeholder="Tu apodo" autocomplete="nickname" value="Piloto" required>
+                <div class="pilot-name-field">
+                  <label for="driver-name">NOMBRE DEL PILOTO</label>
+                  <input id="driver-name" name="name" maxlength="16" placeholder="Tu apodo" autocomplete="nickname" value="Piloto" required>
+                </div>
                 <p id="pilot-name-note" class="pilot-name-note">Como invitado no se guardan puntos ni RaceCoins.</p>
                 <div class="race-options">
                   <div class="option-block">
@@ -126,36 +128,42 @@
                 </div>
                 <input id="track-select" name="trackId" type="hidden" value="monaco">
                 <input id="max-players" name="maxPlayers" type="hidden" value="4">
-                <div class="participants-heading"><span>PARTICIPANTES</span><b><span id="participant-count">4</span> / 8</b></div>
-                <div class="participant-pills" role="group" aria-label="Número de participantes">
-                  <button type="button" class="participant-pill" data-player-count="1" aria-pressed="false">1</button>
-                  <button type="button" class="participant-pill" data-player-count="2" aria-pressed="false">2</button>
-                  <button type="button" class="participant-pill" data-player-count="3" aria-pressed="false">3</button>
-                  <button type="button" class="participant-pill is-selected" data-player-count="4" aria-pressed="true">4</button>
-                  <button type="button" class="participant-pill" data-player-count="5" aria-pressed="false">5</button>
-                  <button type="button" class="participant-pill" data-player-count="6" aria-pressed="false">6</button>
-                  <button type="button" class="participant-pill" data-player-count="7" aria-pressed="false">7</button>
-                  <button type="button" class="participant-pill" data-player-count="8" aria-pressed="false">8</button>
+                <div class="participants-control">
+                  <div class="participants-heading"><span>PARTICIPANTES</span><b><span id="participant-count">4</span> / 8</b></div>
+                  <div class="participant-pills" role="group" aria-label="Número de participantes">
+                    <button type="button" class="participant-pill" data-player-count="1" aria-pressed="false">1</button>
+                    <button type="button" class="participant-pill" data-player-count="2" aria-pressed="false">2</button>
+                    <button type="button" class="participant-pill" data-player-count="3" aria-pressed="false">3</button>
+                    <button type="button" class="participant-pill is-selected" data-player-count="4" aria-pressed="true">4</button>
+                    <button type="button" class="participant-pill" data-player-count="5" aria-pressed="false">5</button>
+                    <button type="button" class="participant-pill" data-player-count="6" aria-pressed="false">6</button>
+                    <button type="button" class="participant-pill" data-player-count="7" aria-pressed="false">7</button>
+                    <button type="button" class="participant-pill" data-player-count="8" aria-pressed="false">8</button>
+                  </div>
                 </div>
-                <label class="bots-switch" for="bots-enabled">
-                  <input id="bots-enabled" name="botsEnabled" type="checkbox" checked>
-                  <span class="switch-indicator" aria-hidden="true"></span>
-                  <span>COMPLETAR PLAZAS CON BOTS</span>
-                  <small>+</small>
-                </label>
-                <div class="difficulty-row" role="group" aria-label="Dificultad de los bots">
-                  <span>DIFICULTAD DE IA</span>
-                  <input id="bot-difficulty" name="difficulty" type="hidden" value="normal">
-                  <button class="difficulty-pill" type="button" data-difficulty="easy" aria-pressed="false">FÁCIL</button>
-                  <button class="difficulty-pill is-selected" type="button" data-difficulty="normal" aria-pressed="true">NORMAL</button>
-                  <button class="difficulty-pill" type="button" data-difficulty="hard" aria-pressed="false">DIFÍCIL</button>
+                <div class="bots-difficulty-controls">
+                  <label class="bots-switch" for="bots-enabled">
+                    <input id="bots-enabled" name="botsEnabled" type="checkbox" checked>
+                    <span class="switch-indicator" aria-hidden="true"></span>
+                    <span>COMPLETAR PLAZAS CON BOTS</span>
+                    <small>+</small>
+                  </label>
+                  <div class="difficulty-row" role="group" aria-label="Dificultad de los bots">
+                    <span>DIFICULTAD DE IA</span>
+                    <input id="bot-difficulty" name="difficulty" type="hidden" value="normal">
+                    <button class="difficulty-pill" type="button" data-difficulty="easy" aria-pressed="false">FÁCIL</button>
+                    <button class="difficulty-pill is-selected" type="button" data-difficulty="normal" aria-pressed="true">NORMAL</button>
+                    <button class="difficulty-pill" type="button" data-difficulty="hard" aria-pressed="false">DIFÍCIL</button>
+                  </div>
                 </div>
-                <button class="primary-button" type="submit">ENTRAR EN PISTA <span aria-hidden="true">→</span></button>
+                <div class="join-action-row">
+                  <button class="primary-button" type="submit">ENTRAR EN PISTA <span aria-hidden="true">→</span></button>
+                  <div class="lan-invite">
+                    <div><small>INVITA A TU ESCUDERÍA</small><a id="lan-url" href="http://localhost:3000">http://localhost:3000</a></div>
+                    <button id="copy-lan" type="button">COPIAR ENLACE LAN</button>
+                  </div>
+                </div>
                 <p class="form-error" id="join-error" role="alert"></p>
-                <div class="lan-invite">
-                  <div><small>INVITA A TU ESCUDERÍA</small><a id="lan-url" href="http://localhost:3000">http://localhost:3000</a></div>
-                  <button id="copy-lan" type="button">COPIAR ENLACE LAN</button>
-                </div>
                 <p id="lan-copy-status" class="lan-copy-status" aria-live="polite"></p>
               </form>
               <aside class="pilot-side" aria-label="Perfil y clasificación del piloto">
